@@ -148,11 +148,16 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $oldVenv "Scripts\python.exe") -PathType Leaf)) {
         throw "The Windows virtual environment is missing. Run setup.ps1 before updating."
     }
+    $currentPython = Join-Path $oldVenv "Scripts\python.exe"
+    $basePython = (& $currentPython -c "import sys; print(sys._base_executable)").Trim()
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $basePython -PathType Leaf)) {
+        throw "Could not locate the base Python interpreter for rebuilding the virtual environment."
+    }
+
     New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
     Move-Item -LiteralPath $oldVenv -Destination $venvBackup -Force
     $oldVenvMoved = $true
 
-    $basePython = Join-Path $venvBackup "Scripts\python.exe"
     # Mark before creation so a partially-created environment is removed on failure.
     $newVenvCreated = $true
     & $basePython -m venv $oldVenv

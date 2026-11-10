@@ -126,6 +126,16 @@ def test_unexpected_file_type_is_rejected(tmp_path):
         updater._validate_archive(archive)
 
 
+def test_unexpected_directory_is_rejected(tmp_path):
+    archive = tmp_path / "unexpected-directory.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        for name in REQUIRED_FILES:
+            zf.writestr(name, "content")
+        zf.writestr("payload/", "")
+    with pytest.raises(UpdateError, match="Unexpected directory"):
+        updater._validate_archive(archive)
+
+
 def test_missing_required_file_is_rejected(tmp_path):
     archive = tmp_path / "incomplete.zip"
     with zipfile.ZipFile(archive, "w") as zf:

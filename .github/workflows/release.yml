@@ -22,14 +22,14 @@ jobs:
         shell: pwsh
         run: |
           $tag = $env:GITHUB_REF_NAME
-          if ($tag -notmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)) {
+          if ($tag -notmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
             throw "Release tag must use SemVer format vMAJOR.MINOR.PATCH: $tag"
           }
           $versionText = Get-Content -Raw version.py
           $match = [regex]::Match($versionText, 'APP_VERSION\s*=\s*["'']([^"'']+)["'']')
           if (-not $match.Success) { throw "APP_VERSION was not found in version.py" }
           $version = $match.Groups[1].Value
-          if ($version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)) {
+          if ($version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
             throw "APP_VERSION is not valid SemVer: $version"
           }
           if ($tag -ne "v$version") {
@@ -85,7 +85,7 @@ jobs:
           $match = [regex]::Match($versionText, 'APP_VERSION\s*=\s*["'']([^"'']+)["'']')
           if (-not $match.Success) { throw "APP_VERSION was not found in version.py" }
           $version = $match.Groups[1].Value
-          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+          if ($version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
             throw "APP_VERSION is not valid SemVer: $version"
           }
           if ($tag -ne "v$version") {
@@ -190,7 +190,7 @@ jobs:
           $match = [regex]::Match($versionText, 'APP_VERSION\s*=\s*["'']([^"'']+)["'']')
           if (-not $match.Success) { throw "APP_VERSION was not found in version.py" }
           $version = $match.Groups[1].Value
-          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+          if ($version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
             throw "APP_VERSION is not valid SemVer: $version"
           }
           if ($tag -ne "v$version") {

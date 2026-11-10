@@ -33,5 +33,16 @@ jobs:
         run: python -c "import PySide6, pandas, openpyxl, pytesseract, PIL, docx, pymupdf"
       - name: Compile Python modules
         run: python -m py_compile core.py main.py electrical_engine.py ocr_engine.py roi_tab.py updater.py version.py
+      - name: Validate PowerShell updater syntax
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/apply_update.ps1", [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | Format-List
+            throw "apply_update.ps1 contains PowerShell syntax errors."
+          }
       - name: Run tests
         run: python -m pytest -q

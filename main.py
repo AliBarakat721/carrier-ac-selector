@@ -1786,8 +1786,11 @@ class HAPToCarrierApp(QMainWindow):
                 (self._txt(r['Type']), None),
                 (self._txt(r['Power Supply']), None),
             ]
-            for col_i, (text, val) in enumerate(cells):
-                cell = self._num_item(text, val, fg, bg)
+            for col_i, spec in enumerate(cells):
+                text, val, *extra = spec
+                cell_fg = extra[0] if len(extra) > 0 and extra[0] is not None else fg
+                cell_bg = extra[1] if len(extra) > 1 and extra[1] is not None else bg
+                cell = self._num_item(text, val, cell_fg, cell_bg)
                 cell.setData(Qt.UserRole, int(df_idx))   # remember DataFrame index
                 self.table.setItem(row_i, col_i, cell)
 

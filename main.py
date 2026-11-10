@@ -30,6 +30,7 @@ import sys
 import os
 import re
 import logging
+import webbrowser
 import errno
 import tempfile
 from contextlib import contextmanager
@@ -1009,6 +1010,18 @@ class HAPToCarrierApp(QMainWindow):
                 f"You are using the latest version (v{result['current_version']})."
             )
             self._set_status(f"Application is up to date — v{result['current_version']}.")
+            return
+
+        if os.name != "nt":
+            QMessageBox.information(
+                self, "Update Available",
+                f"Version {result['latest_version']} is available.\\n\\n"
+                "The in-app installer currently supports Windows. "
+                "The GitHub Releases page will open so you can download the update manually.\\n\\n"
+                f"{result.get('html_url', '')}"
+            )
+            if result.get("html_url"):
+                webbrowser.open(result["html_url"])
             return
 
         notes = str(result.get("release_notes") or "No release notes provided.")

@@ -32,6 +32,32 @@ jobs:
       - name: Verify runtime dependency imports
         run: python -c "import PySide6, pandas, openpyxl, pytesseract, PIL, docx, pymupdf"
       - name: Compile Python modules
-        run: python -m py_compile core.py main.py electrical_engine.py ocr_engine.py roi_tab.py
+        run: python -m py_compile core.py main.py electrical_engine.py ocr_engine.py roi_tab.py updater.py version.py
+      - name: Validate PowerShell updater syntax
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/apply_update.ps1", [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | Format-List
+            throw "apply_update.ps1 contains PowerShell syntax errors."
+          }
+      - name: Smoke-test Windows update archive validation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP "carrier-updater-validation"
+          New-Item -ItemType Directory -Path (Join-Path $stage "data") -Force | Out-Null
+          $required = @("main.py", "core.py", "requirements.txt", "updater.py", "version.py", "apply_update.ps1")
+          foreach ($name in $required) {
+            Set-Content -LiteralPath (Join-Path $stage $name) -Value "# validation fixture"
+          }
+          Set-Content -LiteralPath (Join-Path $stage "data/Carrier_AC_Database.xlsx") -Value "fixture"
+          $archive = Join-Path $env:RUNNER_TEMP "carrier-updater-validation.zip"
+          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $archive -Force
+          & "$PWD/apply_update.ps1" -Archive $archive -TargetDir "$PWD" -WaitPid -1 -ValidateOnly
+          if (-not $?) { throw "Windows update archive validation smoke test failed." }
       - name: Run tests
         run: python -m pytest -q

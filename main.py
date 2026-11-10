@@ -30,12 +30,15 @@ import sys
 import os
 import re
 import logging
+import webbrowser
 import errno
 import tempfile
 from contextlib import contextmanager
 import pandas as pd
 import core
 import ocr_engine
+import updater
+from version import APP_VERSION
 import math
 
 logger = logging.getLogger(__name__)
@@ -148,7 +151,7 @@ from PySide6.QtWidgets import (
     QStatusBar, QTextEdit, QTabWidget, QLineEdit, QProgressBar, QMenu,
     QAbstractItemView, QScrollArea, QFrame,
 )
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtGui import (QPixmap, QColor, QFont, QBrush, QImage,
                               QShortcut, QKeySequence)
 
@@ -347,6 +350,29 @@ class OCRWorker(QThread):
             self.done.emit(text)
         except Exception as exc:
             self.error.emit(str(exc))
+
+
+class UpdateWorker(QThread):
+    """Run release checks and update downloads without blocking the GUI."""
+    update_ready = Signal(object)
+    update_failed = Signal(str)
+
+    def __init__(self, app_dir: str, release: dict | None = None):
+        super().__init__()
+        self.app_dir = app_dir
+        self.release = release
+
+    def run(self):
+        try:
+            if self.release is None:
+                self.update_ready.emit(updater.check_for_updates())
+            else:
+                updater.download_and_launch_update(
+                    self.release, self.app_dir, os.getpid()
+                )
+                self.update_ready.emit({"install_started": True})
+        except Exception as exc:
+            self.update_failed.emit(str(exc))
 
 
 # ── Main Application ───────────────────────────────────────────────────────────
@@ -888,7 +914,9 @@ class HAPToCarrierApp(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Carrier AC Selector  —  HAP Report Analyzer")
+        self.setWindowTitle(f"Carrier AC Selector  —  HAP Report Analyzer v{APP_VERSION}")
+        self._app_dir = os.path.dirname(os.path.abspath(__file__))
+        self._update_worker = None
 
         screen = QApplication.primaryScreen()
         available = screen.availableGeometry() if screen else None
@@ -950,11 +978,107 @@ class HAPToCarrierApp(QMainWindow):
         if notes:
             self._set_status("ℹ  " + "  |  ".join(notes))
 
+
+    # ──────────────────────────────────────────────────────────────
+    # Application updates
+    # ──────────────────────────────────────────────────────────────
+    def _check_for_updates(self):
+        if self._update_worker is not None and self._update_worker.isRunning():
+            return
+        self._update_action.setEnabled(False)
+        self._set_status("Checking GitHub for application updates...")
+        worker = UpdateWorker(self._app_dir)
+        worker.update_ready.connect(self._on_update_check_result)
+        worker.update_failed.connect(self._on_update_error)
+        self._update_worker = worker
+        worker.start()
+
+    def _on_update_check_result(self, result):
+        if result.get("install_started"):
+            QMessageBox.information(
+                self, "Update Started",
+                "The update package has been verified. Carrier AC Selector will close, "
+                "apply the update, and restart automatically."
+            )
+            QApplication.quit()
+            return
+
+        self._update_action.setEnabled(True)
+        if not result.get("update_available"):
+            QMessageBox.information(
+                self, "No Updates Available",
+                f"You are using the latest version (v{result['current_version']})."
+            )
+            self._set_status(f"Application is up to date — v{result['current_version']}.")
+            return
+
+        if os.name != "nt":
+            QMessageBox.information(
+                self, "Update Available",
+                f"Version {result['latest_version']} is available.\n\n"
+                "The in-app installer currently supports Windows. "
+                "The GitHub Releases page will open so you can download the update manually.\n\n"
+                f"{result.get('html_url', '')}"
+            )
+            if result.get("html_url"):
+                webbrowser.open(result["html_url"])
+            return
+
+        notes = str(result.get("release_notes") or "No release notes provided.")
+        if len(notes) > 5000:
+            notes = notes[:5000] + "\n\n[Release notes truncated]"
+        answer = QMessageBox.question(
+            self, "Update Available",
+            f"A new version is available.\n\n"
+            f"Installed version: v{result['current_version']}\n"
+            f"Latest version: v{result['latest_version']}\n\n"
+            f"Release notes:\n{notes}\n\n"
+            "Download and install this update now?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if answer == QMessageBox.Yes:
+            self._start_update_install(result)
+        else:
+            self._set_status("Update postponed.")
+
+    def _start_update_install(self, release):
+        self._update_action.setEnabled(False)
+        self._set_status("Downloading and verifying the update...")
+        worker = UpdateWorker(self._app_dir, release=release)
+        worker.update_ready.connect(self._on_update_check_result)
+        worker.update_failed.connect(self._on_update_error)
+        self._update_worker = worker
+        worker.start()
+
+    def _on_update_error(self, message):
+        self._update_action.setEnabled(True)
+        self._set_status("Update check/install failed.")
+        QMessageBox.warning(
+            self, "Update Error",
+            f"The application could not complete the update.\n\n{message}\n\n"
+            "Your current installation has not been intentionally removed. "
+            "You can try again later or download the release manually."
+        )
+
     # ──────────────────────────────────────────────────────────────
     # UI Construction
     # ──────────────────────────────────────────────────────────────
     def _build_ui(self):
         self.setStyleSheet(DARK_STYLESHEET)
+
+        # Help menu: users can manually check for published GitHub releases.
+        help_menu = self.menuBar().addMenu("Help")
+        self._update_action = help_menu.addAction("Check for Updates")
+        self._update_action.triggered.connect(self._check_for_updates)
+        about_action = help_menu.addAction(f"About Carrier AC Selector v{APP_VERSION}")
+        about_action.triggered.connect(
+            lambda: QMessageBox.information(
+                self, "About Carrier AC Selector",
+                f"Carrier AC Selector — HAP Report Analyzer\nVersion {APP_VERSION}\n\n"
+                "Updates are published through the official GitHub Releases page."
+            )
+        )
 
         # Status bar
         self.status_bar = QStatusBar()
@@ -993,7 +1117,7 @@ class HAPToCarrierApp(QMainWindow):
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
 
-        subtitle = QLabel("HAP Report Analyzer  •  v2.0")
+        subtitle = QLabel(f"HAP Report Analyzer  •  v{APP_VERSION}")
         subtitle.setAlignment(Qt.AlignCenter)
         subtitle.setStyleSheet("color: #6b7280; font-size: 11px;")
         layout.addWidget(subtitle)
@@ -3853,5 +3977,19 @@ if __name__ == "__main__":
     app.setFont(QFont("Segoe UI", 12))
     window = HAPToCarrierApp()
     window.show()
+
+    # The updater waits for this marker before treating a replacement as healthy.
+    # It is written only after the main window has initialized and the Qt event
+    # loop has had time to process startup events.
+    healthcheck_file = os.environ.pop("CARRIER_UPDATE_HEALTHCHECK_FILE", None)
+    if healthcheck_file:
+        def _write_update_healthcheck():
+            try:
+                with open(healthcheck_file, "w", encoding="utf-8") as marker:
+                    marker.write(APP_VERSION)
+            except OSError:
+                logger.exception("Could not write updater startup health check.")
+
+        QTimer.singleShot(5000, _write_update_healthcheck)
 
     sys.exit(app.exec())

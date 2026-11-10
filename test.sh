@@ -13,6 +13,6 @@ fi
 source .venv/bin/activate
 
 pytest -q
-python -m py_compile core.py main.py electrical_engine.py ocr_engine.py roi_tab.py
+python -m py_compile core.py main.py electrical_engine.py ocr_engine.py roi_tab.py updater.py version.py
 
 echo "All tests and syntax checks passed."

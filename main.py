@@ -40,6 +40,18 @@ import math
 logger = logging.getLogger(__name__)
 
 
+def _window_sizes_for_available_geometry(width: int, height: int):
+    """Return (width, height, min_width, min_height) in Qt logical pixels."""
+    if width <= 0 or height <= 0:
+        raise ValueError("Available screen dimensions must be positive.")
+
+    target_width = max(1, min(1300, int(width * 0.95)))
+    target_height = max(1, min(820, int(height * 0.92)))
+    min_width = min(850, target_width)
+    min_height = min(560, target_height)
+    return target_width, target_height, min_width, min_height
+
+
 @contextmanager
 def _atomic_export(path: str):
     """Write an export beside the final path and replace it only on success."""
@@ -88,7 +100,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
     QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox, QGridLayout, QSplitter, QGroupBox,
     QStatusBar, QTextEdit, QTabWidget, QLineEdit, QProgressBar, QMenu,
-    QAbstractItemView,
+    QAbstractItemView, QScrollArea, QFrame,
 )
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import (QPixmap, QColor, QFont, QBrush, QImage,
@@ -822,8 +834,23 @@ class HAPToCarrierApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Carrier AC Selector  —  HAP Report Analyzer")
-        self.resize(1300, 820)
-        self.setMinimumSize(1050, 680)
+
+        screen = QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen else None
+        available_width = available.width() if available else 1300
+        available_height = available.height() if available else 820
+        width, height, min_width, min_height = (
+            _window_sizes_for_available_geometry(
+                available_width, available_height
+            )
+        )
+        self.setMinimumSize(min_width, min_height)
+        if available:
+            x = available.x() + (available.width() - width) // 2
+            y = available.y() + (available.height() - height) // 2
+            self.setGeometry(x, y, width, height)
+        else:
+            self.resize(width, height)
 
         # ── Load database ──────────────────────────────────────
         base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -890,8 +917,16 @@ class HAPToCarrierApp(QMainWindow):
         self.setCentralWidget(splitter)
 
     # ── Left panel ─────────────────────────────────────────────
-    def _build_left_panel(self) -> QWidget:
-        panel  = QWidget()
+    def _build_left_panel(self) -> QScrollArea:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setMinimumWidth(0)
+
+        panel = QWidget()
+        panel.setMinimumWidth(0)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(10, 10, 6, 10)
         layout.setSpacing(10)
@@ -994,7 +1029,8 @@ class HAPToCarrierApp(QMainWindow):
         layout.addWidget(self.btn_clear)
 
         layout.addStretch()
-        return panel
+        scroll.setWidget(panel)
+        return scroll
 
     # ── Right panel ────────────────────────────────────────────
     def _build_right_panel(self) -> QWidget:
@@ -1007,26 +1043,29 @@ class HAPToCarrierApp(QMainWindow):
         filter_grp = QGroupBox("Filters & Options")
         filter_outer = QVBoxLayout(filter_grp)
         filter_outer.setSpacing(6)
-        filter_lyt = QHBoxLayout()
-        filter_lyt.setSpacing(12)
+        filter_lyt = QGridLayout()
+        filter_lyt.setHorizontalSpacing(8)
+        filter_lyt.setVerticalSpacing(6)
+        filter_lyt.setColumnStretch(1, 1)
+        filter_lyt.setColumnStretch(3, 1)
 
-        filter_lyt.addWidget(QLabel("Category:"))
+        filter_lyt.addWidget(QLabel("Category:"), 0, 0)
         self.combo_category = QComboBox()
         self.combo_category.addItems(
             ["All Categories"] + sorted(self.df['Category'].dropna().unique().tolist())
         )
         self.combo_category.currentIndexChanged.connect(self.apply_filters)
-        filter_lyt.addWidget(self.combo_category)
+        filter_lyt.addWidget(self.combo_category, 0, 1)
 
-        filter_lyt.addWidget(QLabel("Type:"))
+        filter_lyt.addWidget(QLabel("Type:"), 0, 2)
         self.combo_type = QComboBox()
         self.combo_type.addItems(
             ["All Types"] + sorted(self.df['Type'].dropna().unique().tolist())
         )
         self.combo_type.currentIndexChanged.connect(self.apply_filters)
-        filter_lyt.addWidget(self.combo_type)
+        filter_lyt.addWidget(self.combo_type, 0, 3)
 
-        filter_lyt.addWidget(QLabel("Series:"))
+        filter_lyt.addWidget(QLabel("Series:"), 1, 0)
         self.combo_series = QComboBox()
         series_set = set()
         for s in self.df['Series'].dropna():
@@ -1036,22 +1075,26 @@ class HAPToCarrierApp(QMainWindow):
                     series_set.add(item)
         self.combo_series.addItems(["All Series"] + sorted(series_set))
         self.combo_series.currentIndexChanged.connect(self.apply_filters)
-        filter_lyt.addWidget(self.combo_series)
+        filter_lyt.addWidget(self.combo_series, 1, 1)
 
-        filter_lyt.addWidget(QLabel("Power:"))
+        filter_lyt.addWidget(QLabel("Power:"), 1, 2)
         self.combo_power = QComboBox()
         self.combo_power.addItems(
             ["All Supplies"] + sorted(self.df['Power Supply'].dropna().unique().tolist())
         )
         self.combo_power.currentIndexChanged.connect(self.apply_filters)
-        filter_lyt.addWidget(self.combo_power)
+        filter_lyt.addWidget(self.combo_power, 1, 3)
 
         filter_outer.addLayout(filter_lyt)
 
-        filter_row2 = QHBoxLayout()
-        filter_row2.setSpacing(12)
+        filter_row2 = QGridLayout()
+        filter_row2.setHorizontalSpacing(8)
+        filter_row2.setVerticalSpacing(6)
+        filter_row2.setColumnStretch(1, 1)
+        filter_row2.setColumnStretch(3, 1)
+        filter_row2.setColumnStretch(5, 1)
 
-        filter_row2.addWidget(QLabel("Safety Factor:"))
+        filter_row2.addWidget(QLabel("Safety Factor:"), 0, 0)
         self.spin_safety = QSpinBox()
         self.spin_safety.setRange(0, 30)
         self.spin_safety.setValue(0)
@@ -1059,9 +1102,9 @@ class HAPToCarrierApp(QMainWindow):
         self.spin_safety.setFixedWidth(82)
         self.spin_safety.setToolTip("Extra margin added to the required load.")
         self.spin_safety.valueChanged.connect(self.apply_filters)
-        filter_row2.addWidget(self.spin_safety)
+        filter_row2.addWidget(self.spin_safety, 0, 1)
 
-        filter_row2.addWidget(QLabel("Min CFM:"))
+        filter_row2.addWidget(QLabel("Min CFM:"), 0, 2)
         self.spin_cover = QSpinBox()
         self.spin_cover.setRange(50, 100)
         self.spin_cover.setValue(100)
@@ -1071,9 +1114,9 @@ class HAPToCarrierApp(QMainWindow):
             "Share of the HAP coil CFM that the unit's HIGH speed must deliver.\n"
             "HAP CFM is a design value (55 °F supply); 85–100 % is typical.")
         self.spin_cover.valueChanged.connect(self.apply_filters)
-        filter_row2.addWidget(self.spin_cover)
+        filter_row2.addWidget(self.spin_cover, 0, 3)
 
-        filter_row2.addWidget(QLabel("Derating:"))
+        filter_row2.addWidget(QLabel("Derating:"), 0, 4)
         self.spin_derate = QSpinBox()
         self.spin_derate.setRange(0, 30)
         self.spin_derate.setValue(0)
@@ -1083,16 +1126,16 @@ class HAPToCarrierApp(QMainWindow):
             "Capacity loss at design ambient vs the catalogue rating "
             "(e.g. Cairo OA ≈ 97 °F).")
         self.spin_derate.valueChanged.connect(self.apply_filters)
-        filter_row2.addWidget(self.spin_derate)
+        filter_row2.addWidget(self.spin_derate, 0, 5)
 
-        filter_row2.addStretch()
+        # Export actions occupy a separate row on narrow windows.
 
         self.btn_export = QPushButton("💾  Export All")
         self.btn_export.setObjectName("btn_success")
         self.btn_export.setEnabled(False)
         self.btn_export.setToolTip("Export every row currently shown in the table.")
         self.btn_export.clicked.connect(self.export_results)
-        filter_row2.addWidget(self.btn_export)
+        filter_row2.addWidget(self.btn_export, 1, 0, 1, 3)
 
         self.btn_export_sel = QPushButton("💾  Export Selected")
         self.btn_export_sel.setObjectName("btn_success")
@@ -1102,7 +1145,7 @@ class HAPToCarrierApp(QMainWindow):
             "then click to export only those."
         )
         self.btn_export_sel.clicked.connect(self.export_selected)
-        filter_row2.addWidget(self.btn_export_sel)
+        filter_row2.addWidget(self.btn_export_sel, 1, 3, 1, 3)
 
         filter_outer.addLayout(filter_row2)
 
@@ -1123,44 +1166,47 @@ class HAPToCarrierApp(QMainWindow):
 
         # ── Best-Unit picker ─────────────────────────────
         best_grp = QGroupBox("🏆  Pick the Best Unit")
-        best_lyt = QHBoxLayout(best_grp)
-        best_lyt.setSpacing(6)
+        best_lyt = QGridLayout(best_grp)
+        best_lyt.setHorizontalSpacing(6)
+        best_lyt.setVerticalSpacing(6)
 
         self.btn_best_overall = QPushButton("🏆  Best Overall")
         self.btn_best_overall.setObjectName("btn_success")
         self.btn_best_overall.setToolTip(
             "Balanced score: least oversized + high EER + airflow closest to 100%.")
         self.btn_best_overall.clicked.connect(lambda: self._pick_best("overall"))
-        best_lyt.addWidget(self.btn_best_overall)
+        best_lyt.addWidget(self.btn_best_overall, 0, 0)
 
         self.btn_best_size = QPushButton("💰  Least Oversized")
         self.btn_best_size.setObjectName("btn_pick")
         self.btn_best_size.setToolTip(
             "Smallest cooling capacity that still covers the required load.")
         self.btn_best_size.clicked.connect(lambda: self._pick_best("size"))
-        best_lyt.addWidget(self.btn_best_size)
+        best_lyt.addWidget(self.btn_best_size, 0, 1)
 
         self.btn_best_eer = QPushButton("⚡  Most Efficient")
         self.btn_best_eer.setObjectName("btn_pick")
         self.btn_best_eer.setToolTip("Highest EER (Btu/Wh) among all matches.")
         self.btn_best_eer.clicked.connect(lambda: self._pick_best("eer"))
-        best_lyt.addWidget(self.btn_best_eer)
+        best_lyt.addWidget(self.btn_best_eer, 0, 2)
 
         self.btn_best_cfm = QPushButton("🌬  Best Airflow")
         self.btn_best_cfm.setObjectName("btn_pick")
         self.btn_best_cfm.setToolTip(
             "Closest CFM coverage to 100% (never under, not over by much).")
         self.btn_best_cfm.clicked.connect(lambda: self._pick_best("cfm"))
-        best_lyt.addWidget(self.btn_best_cfm)
+        best_lyt.addWidget(self.btn_best_cfm, 1, 0)
 
-        best_lyt.addStretch()
+        best_lyt.setColumnStretch(0, 1)
+        best_lyt.setColumnStretch(1, 1)
+        best_lyt.setColumnStretch(2, 1)
 
         self.btn_pick_export = QPushButton("📄  Export Picked")
         self.btn_pick_export.setObjectName("btn_pick")
         self.btn_pick_export.setToolTip(
             "Export only the currently picked best unit as a report.")
         self.btn_pick_export.clicked.connect(self._export_picked)
-        best_lyt.addWidget(self.btn_pick_export)
+        best_lyt.addWidget(self.btn_pick_export, 1, 1)
 
         # ── [NEW/OPTIONAL] Selection Cart ──
         self.btn_add_to_cart = QPushButton("➕  Add to Selection")
@@ -1170,15 +1216,18 @@ class HAPToCarrierApp(QMainWindow):
             "بعد ما تختار وحدة لكل System، افتح تاب 🛒 Selected\n"
             "واحفظهم كلهم في ملف واحد.")
         self.btn_add_to_cart.clicked.connect(self._add_to_selection)
-        best_lyt.addWidget(self.btn_add_to_cart)
+        best_lyt.addWidget(self.btn_add_to_cart, 1, 2)
 
         results_lyt.addWidget(best_grp)
 
         self.table = QTableWidget()
         self.table.setAlternatingRowColors(True)
         self.table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeToContents)
+            QHeaderView.Interactive)
+        self.table.horizontalHeader().setDefaultSectionSize(110)
+        self.table.horizontalHeader().setMinimumSectionSize(60)
         self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.ExtendedSelection)   # ← Ctrl/Shift multi-select
@@ -1297,8 +1346,11 @@ class HAPToCarrierApp(QMainWindow):
         self.table_batch = QTableWidget()
         self.table_batch.setAlternatingRowColors(True)
         self.table_batch.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeToContents)
+            QHeaderView.Interactive)
+        self.table_batch.horizontalHeader().setDefaultSectionSize(110)
+        self.table_batch.horizontalHeader().setMinimumSectionSize(60)
         self.table_batch.horizontalHeader().setStretchLastSection(True)
+        self.table_batch.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.table_batch.verticalHeader().setVisible(False)
         self.table_batch.setSelectionBehavior(QTableWidget.SelectRows)
         self.table_batch.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -1336,8 +1388,11 @@ class HAPToCarrierApp(QMainWindow):
         self.table_selected = QTableWidget()
         self.table_selected.setAlternatingRowColors(True)
         self.table_selected.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeToContents)
+            QHeaderView.Interactive)
+        self.table_selected.horizontalHeader().setDefaultSectionSize(110)
+        self.table_selected.horizontalHeader().setMinimumSectionSize(60)
         self.table_selected.horizontalHeader().setStretchLastSection(True)
+        self.table_selected.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.table_selected.verticalHeader().setVisible(False)
         self.table_selected.setSelectionBehavior(QTableWidget.SelectRows)
         self.table_selected.setSelectionMode(QTableWidget.ExtendedSelection)

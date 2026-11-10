@@ -1015,9 +1015,9 @@ class HAPToCarrierApp(QMainWindow):
         if os.name != "nt":
             QMessageBox.information(
                 self, "Update Available",
-                f"Version {result['latest_version']} is available.\\n\\n"
+                f"Version {result['latest_version']} is available.\n\n"
                 "The in-app installer currently supports Windows. "
-                "The GitHub Releases page will open so you can download the update manually.\\n\\n"
+                "The GitHub Releases page will open so you can download the update manually.\n\n"
                 f"{result.get('html_url', '')}"
             )
             if result.get("html_url"):

@@ -30,8 +30,35 @@ if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed." }
 & $venvPython -m pip install -r requirements-dev.txt
 if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
 
+# Create a Windows desktop shortcut that launches the GUI without a console window.
+$pythonw = Join-Path $PSScriptRoot ".venv\Scripts\pythonw.exe"
+if (-not (Test-Path $pythonw)) {
+    throw "pythonw.exe was not found in the virtual environment. Desktop shortcut was not created."
+}
+
+$desktop = [Environment]::GetFolderPath("DesktopDirectory")
+if ([string]::IsNullOrWhiteSpace($desktop) -or -not (Test-Path $desktop)) {
+    throw "Could not locate the current user's Desktop folder."
+}
+
+$shortcutPath = Join-Path $desktop "Carrier AC Selector.lnk"
+try {
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = $pythonw
+    $shortcut.Arguments = '"main.py"'
+    $shortcut.WorkingDirectory = $PSScriptRoot
+    $shortcut.Description = "Launch Carrier AC Selector"
+    $shortcut.IconLocation = "$pythonw,0"
+    $shortcut.Save()
+} catch {
+    throw "Could not create the desktop shortcut: $($_.Exception.Message)"
+}
+
 Write-Host ""
-Write-Host "Setup complete. Run the application with .\run.ps1"
+Write-Host "Setup complete."
+Write-Host "Desktop shortcut created: $shortcutPath"
+Write-Host "Double-click 'Carrier AC Selector' on your Desktop to launch the application."
 Write-Host "Run tests with .\test.ps1"
 if (-not (Get-Command tesseract -ErrorAction SilentlyContinue)) {
     Write-Warning "Tesseract is not on PATH. Image and scanned-PDF OCR will be unavailable until Tesseract is installed."

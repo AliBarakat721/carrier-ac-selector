@@ -83,7 +83,10 @@ try {
     exit 0
 }
 catch {
-    Write-Error "Update failed: $($_.Exception.Message)"
+    $failureMessage = "Update failed: $($_.Exception.Message)"
+    $logDir = Join-Path $env:LOCALAPPDATA "CarrierACSelector"
+    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+    Add-Content -LiteralPath (Join-Path $logDir "update.log") -Value "$(Get-Date -Format o) $failureMessage"
     foreach ($relative in $newFiles) {
         Remove-Item -LiteralPath (Join-Path $target $relative) -Force -ErrorAction SilentlyContinue
     }
@@ -93,6 +96,16 @@ catch {
             Copy-Item -LiteralPath $backupPath -Destination (Join-Path $target $relative) -Force
         }
     }
-    Write-Error "The previous files were restored where possible."
+    $message = $failureMessage + [Environment]::NewLine + "The previous application files were restored where possible. See $logDir\update.log"
+    try {
+        Add-Type -AssemblyName PresentationFramework
+        [System.Windows.MessageBox]::Show(
+            $message, "Carrier AC Selector Update",
+            [System.Windows.MessageBoxButton]::OK,
+            [System.Windows.MessageBoxImage]::Error
+        ) | Out-Null
+    } catch {
+        Write-Error $message
+    }
     exit 1
 }

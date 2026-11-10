@@ -199,18 +199,30 @@ def extract_text(path: str, progress=None) -> str:
             layer = "\n".join(f"--- page {i+1} of {n} (text layer) ---\n"
                               + doc.load_page(i).get_text() for i in range(n))
             from core import parse_all_systems
-            if parse_hap_text(layer).btu > 0 or any(s.btu > 0 for s in parse_all_systems(layer)):
+            single = parse_hap_text(layer)
+            systems = parse_all_systems(layer)
+            single_complete = single.btu > 0 and single.cfm > 0 and not single.warnings
+            batch_complete = bool(systems) and all(s.btu > 0 and s.cfm > 0 for s in systems)
+            if single_complete or batch_complete:
                 progress(95)
                 return layer
-            # 2) scanned PDF -> OCR each page
+            # A partial native text layer is not proof that all required fields
+            # were extracted. OCR pages and retain both sources for reconciliation.
             chunks = []
             for i in range(n):
                 pix = doc.load_page(i).get_pixmap(matrix=fitz.Matrix(3, 3), alpha=False)
                 img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-                txt = ocr_image(img)
+                try:
+                    txt = ocr_image(img)
+                except OCRUnavailable:
+                    # Keep any useful native text if the optional OCR engine is absent.
+                    if single.btu > 0 or systems:
+                        progress(95)
+                        return layer
+                    raise
                 chunks.append(f"--- page {i+1} of {n} (OCR) ---\n{txt}")
                 progress(10 + int(80 * (i + 1) / n))
-            return "\n".join(chunks)
+            return layer + "\n" + "\n".join(chunks)
         finally:
             doc.close()
     progress(10)

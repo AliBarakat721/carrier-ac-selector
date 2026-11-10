@@ -155,6 +155,10 @@ def calculate_unit_electrical(
         raise ValueError("calculate_unit_electrical: distance_m cannot be negative.")
     if voltage_drop_limit_pct < 0.0:
         raise ValueError("calculate_unit_electrical: voltage_drop_limit_pct cannot be negative.")
+    if isinstance(grouped_circuits, bool) or not isinstance(grouped_circuits, int) or grouped_circuits < 1:
+        raise ValueError("grouped_circuits must be a positive integer.")
+    if install_method not in {"Conduit", "Tray", "Buried"}:
+        raise ValueError("install_method must be Conduit, Tray, or Buried.")
     if conductor_material != "Cu":
         raise NotImplementedError(
             f"Conductor material {conductor_material!r} is not implemented. "
@@ -187,6 +191,7 @@ def calculate_unit_electrical(
     # 3. Breaker Sizing (MCB): Next standard size >= 1.25 * FLA
     mcb_target = fla * 1.25
     mcb_size = next((s for s in STANDARD_MCB_SIZES if s >= mcb_target), STANDARD_MCB_SIZES[-1])
+    mcb_within_catalog = mcb_target <= STANDARD_MCB_SIZES[-1]
 
     # 4. Cable Derating & Sizing (IEC 60364-5-52)
     k_temp = get_temperature_derating(ambient_temp_c)
@@ -195,12 +200,15 @@ def calculate_unit_electrical(
     # Target continuous current after thermal AND grouping derating
     i_required = mcb_size / (max(0.4, k_temp) * k_group)
 
-    # Find minimum cable size carrying i_required
+    # Keep the largest listed size as a candidate, but never imply it is
+    # adequate when the corrected ampacity table cannot satisfy the design.
     chosen_cable = STANDARD_CABLE_SIZES[-1]
+    cable_ampacity_ok = False
     for size in STANDARD_CABLE_SIZES:
         base_amp = CU_AMPACITY.get(size, (0, 0, 0))[method_idx]
         if base_amp >= i_required:
             chosen_cable = size
+            cable_ampacity_ok = True
             break
 
     # 5. Voltage Drop Verification & Auto-Upsizing
@@ -232,6 +240,20 @@ def calculate_unit_electrical(
 
     cable_desc = f"3×{chosen_cable:g} mm² + {ecc_cable:g} mm² E" if phase == 1 else f"4×{chosen_cable:g} mm² + {ecc_cable:g} mm² E"
 
+    corrected_ampacity = (CU_AMPACITY.get(chosen_cable, (0, 0, 0))[method_idx]
+                          * max(0.4, k_temp) * k_group)
+    sizing_basis = ("Catalog current" if current_a_catalog is not None and current_a_catalog > 0
+                    else "Estimated from catalog power/EER/COP")
+    warnings = []
+    if not mcb_within_catalog:
+        warnings.append("Required breaker exceeds the largest listed MCB; protection is not verified.")
+    if not cable_ampacity_ok:
+        warnings.append("Required cable ampacity exceeds the largest listed cable; cable sizing is not verified.")
+    if vdrop_pct > voltage_drop_limit_pct:
+        warnings.append("Voltage-drop limit is not met by the largest listed cable.")
+    if sizing_basis != "Catalog current":
+        warnings.append("FLA is estimated; verify manufacturer nameplate MCA/MOCP/RLA before installation.")
+
     return {
         "kw_elec": kw_elec,
         "voltage": voltage,
@@ -244,6 +266,12 @@ def calculate_unit_electrical(
         "delta_v": delta_v,
         "vdrop_pct": vdrop_pct,
         "vdrop_ok": vdrop_pct <= voltage_drop_limit_pct,
+        "mcb_ok": mcb_within_catalog,
+        "cable_ampacity_ok": cable_ampacity_ok,
+        "corrected_cable_ampacity": corrected_ampacity,
+        "sizing_basis": sizing_basis,
+        "design_verified": False,
+        "warnings": warnings + ["MCA/MOCP protection coordination is not available in the catalogue; engineering approval is still required."],
     }
 
 
@@ -253,6 +281,8 @@ def compute_schedule_summary(
     power_factor: float = 0.85,
     distance_to_main_m: float = 25.0,
     ambient_temp_c: float = 40.0,
+    install_method: str = "Tray",
+    grouped_circuits: int = 1,
 ) -> dict:
     """Compute building panel summary, feeder sizing, and generator/UPS requirements."""
     for _name, _value in (("diversity_factor", diversity_factor),
@@ -269,6 +299,12 @@ def compute_schedule_summary(
         raise ValueError("compute_schedule_summary: power_factor must be in (0, 1].")
     if distance_to_main_m < 0.0:
         raise ValueError("compute_schedule_summary: distance_to_main_m cannot be negative.")
+    if not 0.0 <= diversity_factor <= 1.0:
+        raise ValueError("compute_schedule_summary: diversity_factor must be in [0, 1].")
+    if install_method not in {"Conduit", "Tray", "Buried"}:
+        raise ValueError("compute_schedule_summary: install_method must be Conduit, Tray, or Buried.")
+    if isinstance(grouped_circuits, bool) or not isinstance(grouped_circuits, int) or grouped_circuits < 1:
+        raise ValueError("compute_schedule_summary: grouped_circuits must be a positive integer.")
 
     if not unit_rows:
         return {
@@ -309,13 +345,17 @@ def compute_schedule_summary(
 
     # Main Cable Sizing
     k_temp = get_temperature_derating(ambient_temp_c)
-    i_feeder_req = main_mcb / max(0.4, k_temp)
+    k_group_main = get_grouping_derating(grouped_circuits)
+    i_feeder_req = main_mcb / (max(0.4, k_temp) * k_group_main)
+    method_idx = {"Conduit": 0, "Tray": 1, "Buried": 2}[install_method]
 
     chosen_main_cable = STANDARD_CABLE_SIZES[-1]
+    main_cable_ampacity_ok = False
     for size in STANDARD_CABLE_SIZES:
-        base_amp = CU_AMPACITY.get(size, (0, 0, 0))[1]  # Tray default for main feeder
+        base_amp = CU_AMPACITY.get(size, (0, 0, 0))[method_idx]
         if base_amp >= i_feeder_req:
             chosen_main_cable = size
+            main_cable_ampacity_ok = True
             break
 
     # Main Feeder Voltage Drop — upsize the feeder until the 2% sub-main
@@ -346,6 +386,12 @@ def compute_schedule_summary(
 
     # Warnings & Recommendations
     warnings = []
+    if not main_cable_ampacity_ok:
+        warnings.append("Main feeder required ampacity exceeds the largest listed cable; feeder sizing is not verified.")
+    if main_mcb_target > STANDARD_MCB_SIZES[-1]:
+        warnings.append("Main feeder breaker requirement exceeds the largest listed MCB; protection is not verified.")
+    if any(not row.get("design_verified", False) for row in unit_rows):
+        warnings.append("One or more branch circuits use estimated or unverified electrical sizing; do not use as an approved installation schedule.")
     if has_mixed_phases:
         warnings.append(
             "⚠️ Mixed 1-Phase & 3-Phase loads detected — 3-Phase Distribution Panel "
@@ -374,6 +420,10 @@ def compute_schedule_summary(
         "main_cable": chosen_main_cable,
         "main_cable_desc": main_cable_desc,
         "main_vdrop_pct": main_vdrop_pct,
+        "main_cable_ampacity_ok": main_cable_ampacity_ok,
+        "main_mcb_ok": main_mcb_target <= STANDARD_MCB_SIZES[-1],
+        "install_method": install_method,
+        "grouped_circuits": grouped_circuits,
         "generator_kva": generator_kva,
         "ups_kva": ups_kva,
         "panel_ways": panel_ways,

@@ -625,7 +625,7 @@ class InverterROICalculator(QWidget):
         self.recompute()
 
     def set_capacity_from_load(self, btu: float, units: int = 1):
-        if btu > 0:
+        if btu >= 0:
             self.inp_btu.setValue(btu)
         if units > 0:
             self.spin_units.setValue(units)

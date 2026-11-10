@@ -152,7 +152,8 @@ def load_database(path: str) -> pd.DataFrame:
             df[col] = df[col].map(to_float)
 
     df["CFM Approx"] = df["Airflow (CFM) L/M/H"].astype(str).str.contains("≈")
-    df = df.dropna(subset=["Cooling Capacity (Btu/hr)", "High CFM (numeric)"])
+    # CFM is optional for capacity-only searches; filter missing airflow only when needed.
+    df = df.dropna(subset=["Cooling Capacity (Btu/hr)"])
 
     # Merge duplicate models (same System Model listed under two series)
     dup = df.duplicated("System Model", keep=False)
@@ -361,6 +362,12 @@ def _validate_selection_inputs(btu, cfm, safety_pct, cfm_cover_pct,
             raise ValueError(f"{name} must be a finite number.")
     if btu < 0 or cfm < 0 or sensible_btu < 0:
         raise ValueError("btu, cfm, and sensible_btu cannot be negative.")
+    if not 0.0 <= safety_pct <= 100.0:
+        raise ValueError("safety_pct must be between 0 and 100.")
+    if not 0.0 <= cfm_cover_pct <= 100.0:
+        raise ValueError("cfm_cover_pct must be between 0 and 100.")
+    if not 0.0 <= derate_pct < 100.0:
+        raise ValueError("derate_pct must be in the range [0, 100).")
 
 
 def select_units(df, btu, cfm, *, safety_pct=0.0, cfm_cover_pct=100.0,
@@ -428,6 +435,8 @@ def multi_unit_options(df, btu, cfm, *, safety_pct=0.0, cfm_cover_pct=100.0,
     CFM coverage; options needing more than `max_units` units are dropped.
     """
     _validate_selection_inputs(btu, cfm, safety_pct, cfm_cover_pct, derate_pct)
+    if isinstance(max_units, bool) or not isinstance(max_units, int) or max_units < 1:
+        raise ValueError("max_units must be a positive integer.")
     target_btu = btu * (1.0 + safety_pct / 100.0)
     need_cfm = cfm * cover_factor(cfm_cover_pct)
     if target_btu <= 0 and need_cfm <= 0:
@@ -439,7 +448,10 @@ def multi_unit_options(df, btu, cfm, *, safety_pct=0.0, cfm_cover_pct=100.0,
     for _, r in filtered_df.iterrows():
         unit_btu = r["Cooling Capacity (Btu/hr)"] * (1 - derate_pct / 100.0)
         unit_cfm = r["High CFM (numeric)"]
-        if unit_btu <= 0 or unit_cfm <= 0:
+        if not math.isfinite(unit_btu) or unit_btu <= 0:
+            continue
+        has_airflow = math.isfinite(unit_cfm) and unit_cfm > 0
+        if need_cfm > 0 and not has_airflow:
             continue
         n = max(math.ceil(target_btu / unit_btu) if target_btu > 0 else 1,
                 math.ceil(need_cfm / unit_cfm) if need_cfm > 0 else 1)
@@ -452,7 +464,8 @@ def multi_unit_options(df, btu, cfm, *, safety_pct=0.0, cfm_cover_pct=100.0,
             "System Model": r["System Model"],
             "Unit Btu": unit_btu, "Total Btu": total_btu,
             "Excess %": ((total_btu - btu) / btu * 100.0) if btu > 0 else 0.0,
-            "Unit CFM": unit_cfm, "Total CFM": n * unit_cfm,
+            "Unit CFM": unit_cfm if has_airflow else float("nan"),
+            "Total CFM": n * unit_cfm if has_airflow else float("nan"),
             "EER": r["EER (Btu/Wh)"], "Type": r["Type"],
         })
     out = pd.DataFrame(rows)
@@ -546,10 +559,19 @@ def parse_all_systems(text: str) -> list:
         if prev is None:
             by_name[name] = load
             systems.append(load)
-        elif prev.btu <= 0 < load.btu:
-            idx = next(j for j, s in enumerate(systems) if s.name == name)
-            systems[idx] = load
-            by_name[name] = load
+        else:
+            # Merge repeated sections by field completeness, not BTU alone.
+            merged = SystemLoad(
+                name=name,
+                btu=load.btu if load.btu > 0 else prev.btu,
+                cfm=load.cfm if load.cfm > 0 else prev.cfm,
+                sensible_btu=(load.sensible_btu if load.sensible_btu > 0
+                              else prev.sensible_btu),
+                warnings=list(dict.fromkeys(prev.warnings + load.warnings)),
+            )
+            idx = next(j for j, item in enumerate(systems) if item.name == name)
+            systems[idx] = merged
+            by_name[name] = merged
     return systems
 
 

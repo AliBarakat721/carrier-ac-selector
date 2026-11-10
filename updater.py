@@ -236,6 +236,8 @@ def _validate_archive(archive_path: Path) -> None:
                     raise UpdateError("Encrypted update package entries are not supported.")
 
                 if is_dir:
+                    if parts != ("data",):
+                        raise UpdateError(f"Unexpected directory in update package: {raw_name}")
                     continue
                 if len(parts) == 1 and parts[0] in ALLOWED_ROOT_FILES:
                     found.add(parts[0])

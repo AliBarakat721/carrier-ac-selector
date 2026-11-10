@@ -78,6 +78,8 @@ def _request(url: str, timeout: int = 20) -> bytes:
 
 
 def _validate_asset_url(url: str) -> None:
+    if not isinstance(url, str) or not url:
+        raise UpdateError("The release contains an invalid download URL.")
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme != "https" or parsed.hostname not in {
         "github.com", "api.github.com"
@@ -214,9 +216,10 @@ def _validate_archive(archive_path: Path) -> None:
 
                 is_dir = member.is_dir()
                 clean_name = raw_name[:-1] if is_dir else raw_name
+                raw_parts = clean_name.split("/")
                 path = PurePosixPath(clean_name)
                 parts = path.parts
-                if not parts or any(part in {"", ".", ".."} for part in parts):
+                if not parts or any(part in {"", ".", ".."} for part in raw_parts):
                     raise UpdateError("The update package contains an unsafe file path.")
                 if any(":" in part or part.endswith((" ", ".")) for part in parts):
                     raise UpdateError("The update package contains an invalid Windows path.")
@@ -264,8 +267,10 @@ def _validate_archive(archive_path: Path) -> None:
             bad_member = archive.testzip()
             if bad_member:
                 raise UpdateError(f"The update package contains a corrupt file: {bad_member}")
-    except zipfile.BadZipFile as exc:
-        raise UpdateError("The downloaded update is not a valid ZIP archive.") from exc
+    except UpdateError:
+        raise
+    except (zipfile.BadZipFile, OSError, RuntimeError) as exc:
+        raise UpdateError("The downloaded update is not a valid or readable ZIP archive.") from exc
 
 
 def download_and_launch_update(release: dict, app_dir: str, wait_pid: int) -> None:

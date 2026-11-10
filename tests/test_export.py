@@ -1,0 +1,100 @@
+import sys
+from pathlib import Path
+
+import pandas as pd
+from docx import Document
+from openpyxl import load_workbook
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import main
+import roi_tab
+
+
+def _electrical_rows():
+    return [
+        {
+            "system": "G01",
+            "model": "53QHE36-708F",
+            "qty": 1,
+            "kw_elec": 3.42,
+            "voltage": 220.0,
+            "phase": 1,
+            "fla": 16.0,
+            "mcb_size": 25,
+            "cable_desc": "3×4 mm² + 4 mm² E",
+            "vdrop_pct": 1.4,
+            "vdrop_ok": True,
+        }
+    ]
+
+
+def _electrical_summary():
+    return {
+        "total_kw": 3.42,
+        "demand_fla": 16.0,
+        "main_mcb": 25,
+        "generator_kva": 5.0,
+        "main_cable_desc": "2×4 mm² + 4 mm² E",
+        "warnings": [],
+    }
+
+
+def _roi_inputs():
+    return {
+        "btu": 36_000,
+        "units": 1,
+        "hours_per_day": 8.0,
+        "days_per_year": 180,
+        "tariff": 1.5,
+        "currency": "EGP",
+        "fixed_unit_price": 18_000.0,
+        "inv_unit_price": 26_500.0,
+        "install_delta": 0.0,
+        "saving_pct": 30.0,
+        "lifetime_years": 12,
+        "co2_factor": 0.30,
+    }
+
+
+def test_excel_export_is_styled_and_receives_optional_sheets(tmp_path):
+    path = tmp_path / "report.xlsx"
+    pd.DataFrame({"System": ["G01"], "Cooling Capacity": [36_000]}).to_excel(
+        path, index=False
+    )
+    main._style_excel_file(str(path))
+
+    roi_inputs = _roi_inputs()
+    roi_result = roi_tab.compute_roi(
+        **{key: value for key, value in roi_inputs.items() if key != "currency"}
+    )
+    roi_tab.append_roi_sheet_to_excel(str(path), roi_inputs, roi_result)
+    main.append_electrical_sheet_to_excel(
+        str(path), _electrical_rows(), _electrical_summary()
+    )
+
+    workbook = load_workbook(path)
+    assert workbook.active.freeze_panes == "A2"
+    assert "Inverter_ROI" in workbook.sheetnames
+    assert "Electrical_Schedule" in workbook.sheetnames
+
+
+def test_word_export_helpers_create_readable_sections(tmp_path):
+    path = tmp_path / "report.docx"
+    document = Document()
+
+    roi_inputs = _roi_inputs()
+    roi_result = roi_tab.compute_roi(
+        **{key: value for key, value in roi_inputs.items() if key != "currency"}
+    )
+    roi_tab.append_roi_section_to_docx(document, roi_inputs, roi_result)
+    main.append_electrical_section_to_docx(
+        document, _electrical_rows(), _electrical_summary()
+    )
+    document.save(path)
+
+    reopened = Document(path)
+    text = "\n".join(paragraph.text for paragraph in reopened.paragraphs)
+    assert "Inverter vs Fixed Speed" in text
+    assert "HVAC Electrical Load" in text
+    assert len(reopened.tables) >= 2

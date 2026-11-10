@@ -17,6 +17,8 @@ Desktop tool built with PySide6 that reads a HAP *Air System Sizing Summary* scr
 - **Export:** Excel, CSV, and formatted Word reports.
 - **UI:** dark PySide6 interface, background OCR worker, image/PDF preview, and OCR debug tab.
 
+For the complete end-user workflow, see the [detailed User Guide](docs/USER_GUIDE.md).
+
 ## Requirements
 
 - Python 3.10 or newer.
@@ -53,11 +55,47 @@ On Windows, install Tesseract using the UB Mannheim installer and add its instal
 1. Download the repository using **Code → Download ZIP**, then extract the ZIP file.
 2. Install Python 3.10 or newer from https://www.python.org/downloads/windows/ and enable **Add Python to PATH** during installation.
 3. Open the extracted project folder and double-click **Start_Carrier.bat**.
-4. On the first launch, the launcher creates the Windows virtual environment, installs the required Python packages, and creates a **Carrier AC Selector** shortcut on the Desktop.
+4. On the first launch, the launcher creates the Windows virtual environment, verifies the required Python packages, and creates a **Carrier AC Selector** shortcut on the Desktop when Windows allows it.
 5. After setup finishes, the application starts. For future use, double-click the **Carrier AC Selector** icon on the Desktop. You can also double-click `Start_Carrier.bat` inside the project folder.
 6. To update later, open the application and choose **Help → Check for Updates**. If a newer release is available, confirm the download; the app verifies its SHA-256 checksum, closes, applies the update, and restarts.
 
-Keep the extracted project folder in its original location after setup. The Desktop shortcut points to that folder, so moving or deleting it will break the shortcut. An internet connection is required for the first-time package installation.
+Keep the extracted project folder in its original location after setup. The Desktop shortcut points to that folder, so moving or deleting it will break the shortcut. An internet connection is required for the first-time package installation. If Windows blocks shortcut creation, the application can still be started with `Start_Carrier.bat` or `run.ps1`.
+
+### Windows installation walkthrough
+
+Follow these steps if you downloaded the project as a ZIP file:
+
+#### 1. Download the project from GitHub
+
+Open the repository page, click **Code**, and select **Download ZIP**. Save the ZIP file to your computer, usually in the Downloads folder.
+
+![GitHub Code menu showing Download ZIP](docs/images/installation/01-download-zip.png)
+
+#### 2. Extract the ZIP file
+
+Open the Downloads folder, right-click `carrier-ac-selector-main.zip`, choose **Extract All...**, and select a permanent folder. Do not run the program from inside the ZIP preview.
+
+![Windows context menu showing Extract All](docs/images/installation/02-extract-zip.png)
+
+#### 3. Install Python
+
+If Python is not already installed, download Python 3.10 or newer from the [official Windows download page](https://www.python.org/downloads/windows/). During installation, enable **Add Python to PATH**.
+
+#### 4. Start the automatic installer
+
+Open the extracted `carrier-ac-selector-main` folder and double-click `Start_Carrier.bat`. The first run creates `.venv`, installs the Python packages, checks the installation, and starts the application. Keep the computer connected to the internet during this step.
+
+![Extracted project folder with Start_Carrier.bat selected](docs/images/installation/03-start-installer.png)
+
+#### 5. Use the Desktop shortcut
+
+When setup succeeds, Windows creates a **Carrier AC Selector** shortcut on the Desktop. Keep the extracted project folder in place because the shortcut uses that folder as the application working directory.
+
+If Windows cannot create the shortcut, this does not prevent the application from working. Run `Start_Carrier.bat` again or use `run.ps1` from PowerShell.
+
+#### 6. Optional OCR setup
+
+Tesseract OCR is only needed for image files and scanned PDFs. RTF files and PDFs that already contain selectable text do not require Tesseract. See [Install Tesseract](#install-tesseract) above for the Windows setup note.
 
 ### Windows (PowerShell)
 

@@ -14,10 +14,12 @@ jobs:
     steps:
       - name: Check out tagged source
         uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Validate release version
         shell: pwsh
         run: |
@@ -35,6 +37,7 @@ jobs:
           if ($tag -ne "v$version") {
             throw "Tag $tag does not match APP_VERSION $version"
           }
+
       - name: Run release preflight tests
         shell: pwsh
         run: |
@@ -51,6 +54,7 @@ jobs:
             $errors | Format-List
             throw "PowerShell updater syntax validation failed."
           }
+
       - name: Build Windows update package
         shell: pwsh
         run: |
@@ -63,179 +67,24 @@ jobs:
           $stage = Join-Path $env:RUNNER_TEMP "carrier-release"
           New-Item -ItemType Directory -Path $stage -Force | Out-Null
           foreach ($file in $files) {
-            if (-not (Test-Path $file -PathType Leaf)) { throw "Missing release file: $file" }
-            Copy-Item $file $stage
+            if (-not (Test-Path $file -PathType Leaf)) {
+              throw "Missing release file: $file"
+            }
+            Copy-Item -LiteralPath $file -Destination $stage
           }
-          Copy-Item "data" (Join-Path $stage "data") -Recurse
-          $archive = Join-Path $env:RUNNER_TEMP "CarrierACSelector-Windows.zip"
+          if (-not (Test-Path "data" -PathType Container)) {
+            throw "The application data directory is missing."
+          }
+          Copy-Item -LiteralPath "data" -Destination (Join-Path $stage "data") -Recurse
+          $archive = Join-Path $PWD "CarrierACSelector-Windows.zip"
           Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $archive -CompressionLevel Optimal
           $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  CarrierACSelector-Windows.zip" | Set-Content -Path (Join-Path $env:RUNNER_TEMP "SHA256SUMS.txt") -Encoding ascii
+          "$hash  CarrierACSelector-Windows.zip" | Set-Content -Path (Join-Path $PWD "SHA256SUMS.txt") -Encoding ascii
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
-            ${{ runner.temp }}/CarrierACSelector-Windows.zip
-            ${{ runner.temp }}/SHA256SUMS.txt
-) {
-            throw "Release tag must use SemVer format vMAJOR.MINOR.PATCH: $tag"
-          }
-          $versionText = Get-Content -Raw version.py
-          $match = [regex]::Match($versionText, 'APP_VERSION\s*=\s*["'']([^"'']+)["'']')
-          if (-not $match.Success) { throw "APP_VERSION was not found in version.py" }
-          $version = $match.Groups[1].Value
-          if ($version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
-            throw "APP_VERSION is not valid SemVer: $version"
-          }
-          if ($tag -ne "v$version") {
-            throw "Tag $tag does not match APP_VERSION $version"
-          }
-      - name: Run release preflight tests
-        shell: pwsh
-        run: |
-          python -m pip install -r requirements-dev.txt
-          if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
-          python -m py_compile core.py main.py electrical_engine.py ocr_engine.py roi_tab.py updater.py version.py
-          if ($LASTEXITCODE -ne 0) { throw "Python compilation failed." }
-          python -m pytest -q
-          if ($LASTEXITCODE -ne 0) { throw "Tests failed; refusing to publish this release." }
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/apply_update.ps1", [ref]$tokens, [ref]$errors) | Out-Null
-          if ($errors.Count -gt 0) {
-            $errors | Format-List
-            throw "PowerShell updater syntax validation failed."
-          }
-      - name: Build Windows update package
-        shell: pwsh
-        run: |
-          $files = @(
-            "main.py", "core.py", "ocr_engine.py", "electrical_engine.py",
-            "roi_tab.py", "updater.py", "version.py", "apply_update.ps1",
-            "Start_Carrier.bat", "setup.ps1", "run.ps1", "test.ps1",
-            "requirements.txt", "requirements-dev.txt", "README.md"
-          )
-          $stage = Join-Path $env:RUNNER_TEMP "carrier-release"
-          New-Item -ItemType Directory -Path $stage -Force | Out-Null
-          foreach ($file in $files) {
-            if (-not (Test-Path $file -PathType Leaf)) { throw "Missing release file: $file" }
-            Copy-Item $file $stage
-          }
-          Copy-Item "data" (Join-Path $stage "data") -Recurse
-          $archive = Join-Path $env:RUNNER_TEMP "CarrierACSelector-Windows.zip"
-          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $archive -CompressionLevel Optimal
-          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  CarrierACSelector-Windows.zip" | Set-Content -Path (Join-Path $env:RUNNER_TEMP "SHA256SUMS.txt") -Encoding ascii
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          files: |
-            ${{ runner.temp }}/CarrierACSelector-Windows.zip
-            ${{ runner.temp }}/SHA256SUMS.txt
-) {
-            throw "APP_VERSION is not valid SemVer: $version"
-          }
-          if ($tag -ne "v$version") {
-            throw "Tag $tag does not match APP_VERSION $version"
-          }
-      - name: Run release preflight tests
-        shell: pwsh
-        run: |
-          python -m pip install -r requirements-dev.txt
-          if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
-          python -m py_compile core.py main.py electrical_engine.py ocr_engine.py roi_tab.py updater.py version.py
-          if ($LASTEXITCODE -ne 0) { throw "Python compilation failed." }
-          python -m pytest -q
-          if ($LASTEXITCODE -ne 0) { throw "Tests failed; refusing to publish this release." }
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/apply_update.ps1", [ref]$tokens, [ref]$errors) | Out-Null
-          if ($errors.Count -gt 0) {
-            $errors | Format-List
-            throw "PowerShell updater syntax validation failed."
-          }
-      - name: Build Windows update package
-        shell: pwsh
-        run: |
-          $files = @(
-            "main.py", "core.py", "ocr_engine.py", "electrical_engine.py",
-            "roi_tab.py", "updater.py", "version.py", "apply_update.ps1",
-            "Start_Carrier.bat", "setup.ps1", "run.ps1", "test.ps1",
-            "requirements.txt", "requirements-dev.txt", "README.md"
-          )
-          $stage = Join-Path $env:RUNNER_TEMP "carrier-release"
-          New-Item -ItemType Directory -Path $stage -Force | Out-Null
-          foreach ($file in $files) {
-            if (-not (Test-Path $file -PathType Leaf)) { throw "Missing release file: $file" }
-            Copy-Item $file $stage
-          }
-          Copy-Item "data" (Join-Path $stage "data") -Recurse
-          $archive = Join-Path $env:RUNNER_TEMP "CarrierACSelector-Windows.zip"
-          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $archive -CompressionLevel Optimal
-          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  CarrierACSelector-Windows.zip" | Set-Content -Path (Join-Path $env:RUNNER_TEMP "SHA256SUMS.txt") -Encoding ascii
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          files: |
-            ${{ runner.temp }}/CarrierACSelector-Windows.zip
-            ${{ runner.temp }}/SHA256SUMS.txt
-) {
-            throw "Release tag must use SemVer format vMAJOR.MINOR.PATCH: $tag"
-          }
-          $versionText = Get-Content -Raw version.py
-          $match = [regex]::Match($versionText, 'APP_VERSION\s*=\s*["'']([^"'']+)["'']')
-          if (-not $match.Success) { throw "APP_VERSION was not found in version.py" }
-          $version = $match.Groups[1].Value
-          if ($version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
-            throw "APP_VERSION is not valid SemVer: $version"
-          }
-          if ($tag -ne "v$version") {
-            throw "Tag $tag does not match APP_VERSION $version"
-          }
-      - name: Run release preflight tests
-        shell: pwsh
-        run: |
-          python -m pip install -r requirements-dev.txt
-          if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
-          python -m py_compile core.py main.py electrical_engine.py ocr_engine.py roi_tab.py updater.py version.py
-          if ($LASTEXITCODE -ne 0) { throw "Python compilation failed." }
-          python -m pytest -q
-          if ($LASTEXITCODE -ne 0) { throw "Tests failed; refusing to publish this release." }
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/apply_update.ps1", [ref]$tokens, [ref]$errors) | Out-Null
-          if ($errors.Count -gt 0) {
-            $errors | Format-List
-            throw "PowerShell updater syntax validation failed."
-          }
-      - name: Build Windows update package
-        shell: pwsh
-        run: |
-          $files = @(
-            "main.py", "core.py", "ocr_engine.py", "electrical_engine.py",
-            "roi_tab.py", "updater.py", "version.py", "apply_update.ps1",
-            "Start_Carrier.bat", "setup.ps1", "run.ps1", "test.ps1",
-            "requirements.txt", "requirements-dev.txt", "README.md"
-          )
-          $stage = Join-Path $env:RUNNER_TEMP "carrier-release"
-          New-Item -ItemType Directory -Path $stage -Force | Out-Null
-          foreach ($file in $files) {
-            if (-not (Test-Path $file -PathType Leaf)) { throw "Missing release file: $file" }
-            Copy-Item $file $stage
-          }
-          Copy-Item "data" (Join-Path $stage "data") -Recurse
-          $archive = Join-Path $env:RUNNER_TEMP "CarrierACSelector-Windows.zip"
-          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $archive -CompressionLevel Optimal
-          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  CarrierACSelector-Windows.zip" | Set-Content -Path (Join-Path $env:RUNNER_TEMP "SHA256SUMS.txt") -Encoding ascii
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          files: |
-            ${{ runner.temp }}/CarrierACSelector-Windows.zip
-            ${{ runner.temp }}/SHA256SUMS.txt
+            CarrierACSelector-Windows.zip
+            SHA256SUMS.txt

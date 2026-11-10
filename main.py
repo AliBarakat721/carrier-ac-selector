@@ -151,7 +151,7 @@ from PySide6.QtWidgets import (
     QStatusBar, QTextEdit, QTabWidget, QLineEdit, QProgressBar, QMenu,
     QAbstractItemView, QScrollArea, QFrame,
 )
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtGui import (QPixmap, QColor, QFont, QBrush, QImage,
                               QShortcut, QKeySequence)
 
@@ -3977,5 +3977,19 @@ if __name__ == "__main__":
     app.setFont(QFont("Segoe UI", 12))
     window = HAPToCarrierApp()
     window.show()
+
+    # The updater waits for this marker before treating a replacement as healthy.
+    # It is written only after the main window has initialized and the Qt event
+    # loop has had time to process startup events.
+    healthcheck_file = os.environ.pop("CARRIER_UPDATE_HEALTHCHECK_FILE", None)
+    if healthcheck_file:
+        def _write_update_healthcheck():
+            try:
+                with open(healthcheck_file, "w", encoding="utf-8") as marker:
+                    marker.write(APP_VERSION)
+            except OSError:
+                logger.exception("Could not write updater startup health check.")
+
+        QTimer.singleShot(5000, _write_update_healthcheck)
 
     sys.exit(app.exec())

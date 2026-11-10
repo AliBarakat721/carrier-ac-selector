@@ -447,23 +447,33 @@ class SystemLoad:
         return self.btu > 0 and self.cfm > 0
 
 
-# HAP emits TWO header layouts for the SAME system:
+# HAP emits two header layouts for the SAME system:
 #   PNG/PDF: 'Air System Sizing Summary for <name>'
 #   RTF:     'Air System Information ... Air System Name <name>'
-# The info-block header appears in BOTH formats, so we anchor on it.
-# Name = letter+digit token (skips OCR noise like 'ooo ccc... s').
+# Keep both patterns because PDF/PNG exports may not contain the information
+# block at all.  Name = letter+digit token (skips OCR noise like 'ooo ccc... s').
 _SYSTEM_HEADER = re.compile(
     r'Air\s+System\s+Information'
     r'[\s\S]{0,300}?Air\s+System\s+Name\b'
     r'[\s\S]{0,200}?\b([A-Za-z][A-Za-z0-9_\-]*\d[A-Za-z0-9_\-]*)\b',
     re.I)
 
-# Lenient fallback: names WITHOUT digits (e.g. AHU-MAIN, ZONE-EAST).
-# Only used when the strict pattern finds nothing — so noisy OCR text
-# (which the strict \d-guard protects against) can never reach this path.
+_SYSTEM_SUMMARY_HEADER = re.compile(
+    r'Air\s+System\s+Sizing\s+Summary\s+for\s+'
+    r'\b([A-Za-z][A-Za-z0-9_\-]*\d[A-Za-z0-9_\-]*)\b',
+    re.I)
+
+# Lenient fallback: names WITHOUT digits (e.g. AHU-MAIN, ZONE-EAST).  These
+# are used only when no strict match exists for the same header layout, so
+# noisy OCR text cannot normally reach this path.
 _SYSTEM_HEADER_LENIENT = re.compile(
     r'Air\s+System\s+Information'
     r'[\s\S]{0,300}?Air\s+System\s+Name\b[\s.\-_]*'
+    r'([A-Za-z0-9][A-Za-z0-9_\-]*)\b',
+    re.I)
+
+_SYSTEM_SUMMARY_HEADER_LENIENT = re.compile(
+    r'Air\s+System\s+Sizing\s+Summary\s+for\s+'
     r'([A-Za-z0-9][A-Za-z0-9_\-]*)\b',
     re.I)
 
@@ -477,8 +487,21 @@ def parse_all_systems(text: str) -> list:
     the first chunk per name that yields a cooling load.
     """
     t = re.sub(r'(\d),(\d{3})', r'\1\2', text or "")
-    matches = (list(_SYSTEM_HEADER.finditer(t))
-               or list(_SYSTEM_HEADER_LENIENT.finditer(t)))
+    # Collect both layouts and preserve their order.  Do not use ``or`` here:
+    # a report can contain a mixture of RTF-style and PDF-style headers.
+    def _merge_layout_matches(strict_pattern, lenient_pattern):
+        strict = list(strict_pattern.finditer(t))
+        strict_starts = {m.start() for m in strict}
+        # Keep lenient matches for names without digits even when another
+        # system in the same report has a digit-bearing name.  At a strict
+        # match's start, prefer the strict match to avoid duplicates.
+        return strict + [m for m in lenient_pattern.finditer(t)
+                         if m.start() not in strict_starts]
+
+    info_matches = _merge_layout_matches(_SYSTEM_HEADER, _SYSTEM_HEADER_LENIENT)
+    summary_matches = _merge_layout_matches(
+        _SYSTEM_SUMMARY_HEADER, _SYSTEM_SUMMARY_HEADER_LENIENT)
+    matches = sorted(info_matches + summary_matches, key=lambda m: m.start())
     systems: list = []
     by_name: dict = {}
 

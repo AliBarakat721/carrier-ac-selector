@@ -52,7 +52,7 @@ On Windows, install Tesseract using the UB Mannheim installer and add its instal
 
 ### Windows — easiest method for non-technical users
 
-1. Download the repository using **Code → Download ZIP**, then extract the ZIP file.
+1. Open the [latest GitHub Release](https://github.com/AliBarakat721/carrier-ac-selector/releases/latest), expand **Assets**, and download **CarrierACSelector-Windows.zip**. Extract it to a permanent folder.
 2. Install Python 3.10 or newer from https://www.python.org/downloads/windows/ and enable **Add Python to PATH** during installation.
 3. Open the extracted project folder and double-click **Start_Carrier.bat**.
 4. On the first launch, the launcher creates the Windows virtual environment, verifies the required Python packages, and creates a **Carrier AC Selector** shortcut on the Desktop when Windows allows it.
@@ -63,17 +63,15 @@ Keep the extracted project folder in its original location after setup. The Desk
 
 ### Windows installation walkthrough
 
-Follow these steps if you downloaded the project as a ZIP file:
+Follow these steps to install the latest published Windows release:
 
-#### 1. Download the project from GitHub
+#### 1. Download the Windows release
 
-Open the repository page, click **Code**, and select **Download ZIP**. Save the ZIP file to your computer, usually in the Downloads folder.
-
-![GitHub Code menu showing Download ZIP](docs/images/installation/01-download-zip.png)
+Open the [latest GitHub Release](https://github.com/AliBarakat721/carrier-ac-selector/releases/latest). Under **Assets**, download `CarrierACSelector-Windows.zip` (not the source-code ZIP files). Save it to your computer.
 
 #### 2. Extract the ZIP file
 
-Open the Downloads folder, right-click `carrier-ac-selector-main.zip`, choose **Extract All...**, and select a permanent folder. Do not run the program from inside the ZIP preview.
+Open the Downloads folder, right-click `CarrierACSelector-Windows.zip`, choose **Extract All...**, and select a permanent folder. Do not run the program from inside the ZIP preview.
 
 ![Windows context menu showing Extract All](docs/images/installation/02-extract-zip.png)
 
@@ -83,7 +81,7 @@ If Python is not already installed, download Python 3.10 or newer from the [offi
 
 #### 4. Start the automatic installer
 
-Open the extracted `carrier-ac-selector-main` folder and double-click `Start_Carrier.bat`. The first run creates `.venv`, installs the Python packages, checks the installation, and starts the application. Keep the computer connected to the internet during this step.
+Open the extracted release folder and double-click `Start_Carrier.bat`. The first run creates `.venv`, installs the Python packages, checks the installation, and starts the application. Keep the computer connected to the internet during this step.
 
 ![Extracted project folder with Start_Carrier.bat selected](docs/images/installation/03-start-installer.png)
 

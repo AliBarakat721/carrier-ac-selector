@@ -203,6 +203,7 @@ requirements-dev.txt          Test/development dependencies
 - To publish an update: bump `APP_VERSION` (for example, `2.0.0` → `2.0.1`), commit the change, create and push the matching tag (`v2.0.1`). GitHub Actions then creates a Release with the Windows package.
 - The updater verifies the package SHA-256 checksum and validates ZIP paths, file types, duplicate names, links, and expanded size before extraction. It preserves existing `data/Carrier_AC_Database.xlsx` and `data/Carrier_AC_Database.csv` files instead of overwriting user data. The previous `.venv` and replaced application files are backed up under `%LOCALAPPDATA%\CarrierACSelector\update-backups`; the replacement virtual environment is created directly at its final `.venv` path because Python virtual environments must not be moved after creation. If dependency installation, import checks, or the post-update application startup check fails, the updater attempts to restore the previous files and environment. Update details are written to `%LOCALAPPDATA%\CarrierACSelector\update.log`.
 - Updates require internet access and a published Release. If no Release exists yet, the app reports that no published release is available.
+- SHA-256 detects package corruption or a mismatch with the published checksum; because both files are hosted in the same Release, it is not a publisher-authenticity signature. Protect release permissions and version tags, and use GitHub's protected-tag/release controls for production distribution.
 
 ## Adding a new AC model
 

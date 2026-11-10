@@ -73,7 +73,10 @@ function Test-UpdateArchive([string]$ZipPath) {
             if ($kind -eq 0xA000 -or ($kind -ne 0 -and $kind -ne 0x8000 -and $kind -ne 0x4000)) {
                 throw "Links and special files are not allowed: $raw"
             }
-            if ($isDirectory) { continue }
+            if ($isDirectory) {
+                if ($clean -ne 'data') { throw "Unexpected directory in update archive: $raw" }
+                continue
+            }
 
             if ($parts.Count -eq 1 -and $allowedRoot -contains $parts[0]) {
                 [void]$found.Add($parts[0])
@@ -145,9 +148,10 @@ try {
     $oldVenvMoved = $true
 
     $basePython = Join-Path $venvBackup "Scripts\python.exe"
+    # Mark before creation so a partially-created environment is removed on failure.
+    $newVenvCreated = $true
     & $basePython -m venv $oldVenv
     if ($LASTEXITCODE -ne 0) { throw "Could not create the replacement virtual environment." }
-    $newVenvCreated = $true
 
     $newPython = Join-Path $oldVenv "Scripts\python.exe"
     & $newPython -m pip install --disable-pip-version-check -r (Join-Path $stage "requirements.txt")

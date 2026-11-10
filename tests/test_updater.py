@@ -60,17 +60,17 @@ def test_check_for_updates_parses_release_and_assets(monkeypatch):
     release = {
         "tag_name": "v2.0.2",
         "body": "Bug fixes",
-        "html_url": "https://github.com/AliBarakat721/carrier-ac-selector/releases/tag/v2.0.1",
+        "html_url": "https://github.com/AliBarakat721/carrier-ac-selector/releases/tag/v2.0.2",
         "draft": False,
         "prerelease": False,
         "assets": [
             {
                 "name": updater.WINDOWS_ASSET,
-            "browser_download_url": "https://github.com/AliBarakat721/carrier-ac-selector/releases/download/v2.0.2/update.zip",
+                "browser_download_url": "https://github.com/AliBarakat721/carrier-ac-selector/releases/download/v2.0.2/CarrierACSelector-Windows.zip",
             },
             {
                 "name": updater.CHECKSUM_ASSET,
-            "browser_download_url": "https://github.com/AliBarakat721/carrier-ac-selector/releases/download/v2.0.2/SHA256SUMS.txt",
+                "browser_download_url": "https://github.com/AliBarakat721/carrier-ac-selector/releases/download/v2.0.2/SHA256SUMS.txt",
             },
         ],
     }
@@ -78,7 +78,7 @@ def test_check_for_updates_parses_release_and_assets(monkeypatch):
     result = updater.check_for_updates()
     assert result["update_available"] is True
     assert result["latest_version"] == "2.0.2"
-    assert result["asset_url"].endswith("update.zip")
+    assert result["asset_url"].endswith(updater.WINDOWS_ASSET)
     assert result["checksum_url"].endswith("SHA256SUMS.txt")
 
 

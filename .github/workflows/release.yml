@@ -35,6 +35,22 @@ jobs:
           if ($tag -ne "v$version") {
             throw "Tag $tag does not match APP_VERSION $version"
           }
+      - name: Run release preflight tests
+        shell: pwsh
+        run: |
+          python -m pip install -r requirements-dev.txt
+          if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
+          python -m py_compile core.py main.py electrical_engine.py ocr_engine.py roi_tab.py updater.py version.py
+          if ($LASTEXITCODE -ne 0) { throw "Python compilation failed." }
+          python -m pytest -q
+          if ($LASTEXITCODE -ne 0) { throw "Tests failed; refusing to publish this release." }
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/apply_update.ps1", [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | Format-List
+            throw "PowerShell updater syntax validation failed."
+          }
       - name: Build Windows update package
         shell: pwsh
         run: |

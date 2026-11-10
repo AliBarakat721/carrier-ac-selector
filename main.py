@@ -102,9 +102,9 @@ def _atomic_export(path: str):
 
 
 def _replace_export_extension(path: str, required_ext: str) -> str:
-    """Replace only a known export suffix; preserve dots in names like AHU 1.2."""
+    """Replace a textual extension while preserving numeric dotted names."""
     base, suffix = os.path.splitext(path)
-    if suffix.lower() in {".xlsx", ".docx", ".csv"}:
+    if suffix and suffix[1:].isalpha():
         path = base
     return f"{path}.{required_ext.lstrip('.')}"
 
@@ -652,6 +652,13 @@ class ElectricalScheduleTab(QWidget):
         self.combo_method.currentIndexChanged.connect(self.recompute)
         p_lyt.addWidget(self.combo_method, 4, 1)
 
+        p_lyt.addWidget(QLabel("Grouped Circuits:"), 5, 0)
+        self.spin_grouped = QSpinBox()
+        self.spin_grouped.setRange(1, 9)
+        self.spin_grouped.setValue(1)
+        self.spin_grouped.valueChanged.connect(self.recompute)
+        p_lyt.addWidget(self.spin_grouped, 5, 1)
+
         top_hbox.addWidget(grp_param, 2)
 
         # Summary KPIs Group
@@ -792,6 +799,7 @@ class ElectricalScheduleTab(QWidget):
                 install_method=method,
                 power_w_catalog=u.get("power_w"),
                 current_a_catalog=u.get("current_a"),
+                grouped_circuits=self.spin_grouped.value(),
             )
             calc["system"] = u["system"]
             calc["model"] = u["model"]
@@ -804,6 +812,8 @@ class ElectricalScheduleTab(QWidget):
             power_factor=pf,
             distance_to_main_m=dist + 5.0,
             ambient_temp_c=temp,
+            install_method=method,
+            grouped_circuits=self.spin_grouped.value(),
         )
 
         # Update KPI Labels
@@ -1541,6 +1551,19 @@ class HAPToCarrierApp(QMainWindow):
 
     def _load_report(self, path: str):
         """Load a HAP report from `path` (dialog + drag-and-drop share this)."""
+        self._ocr_job_id = getattr(self, "_ocr_job_id", 0) + 1
+        job_id = self._ocr_job_id
+        self.current_results = None
+        self.current_btu = self.current_cfm = self.current_sensible = 0.0
+        self.picked_df_index = None
+        self.table.clearSelection()
+        self.table.setRowCount(0)
+        self.table_multi.setRowCount(0)
+        self.btn_export.setEnabled(False)
+        self.btn_export_sel.setEnabled(False)
+        self.selected_units.clear()
+        self._render_selected_table()
+        self._roi_update_capacity(0.0, units=1)
         # Remember uploaded file's base name (e.g. "G01" from "G01.png")
         # so exports default to G01.xlsx / G01_selected.xlsx / G01_multi.xlsx
         base = os.path.splitext(os.path.basename(path))[0].strip()
@@ -1582,11 +1605,13 @@ class HAPToCarrierApp(QMainWindow):
 
         self.ocr_worker = OCRWorker(path)
         self.ocr_worker.progress.connect(self.progress_bar.setValue)
-        self.ocr_worker.done.connect(self._on_ocr_done)
-        self.ocr_worker.error.connect(self._on_ocr_error)
+        self.ocr_worker.done.connect(lambda result, token=job_id: self._on_ocr_done(result, token))
+        self.ocr_worker.error.connect(lambda message, token=job_id: self._on_ocr_error(message, token))
         self.ocr_worker.start()
 
-    def _on_ocr_done(self, text: str):
+    def _on_ocr_done(self, text: str, job_id=None):
+        if job_id is not None and job_id != getattr(self, "_ocr_job_id", 0):
+            return
         self.txt_debug.setPlainText(text)
         self.progress_bar.setValue(100)
         self.progress_bar.setVisible(False)
@@ -1653,7 +1678,9 @@ class HAPToCarrierApp(QMainWindow):
         self.input_btu.setFocus()
         self.input_btu.selectAll()
 
-    def _on_ocr_error(self, msg: str):
+    def _on_ocr_error(self, msg: str, job_id=None):
+        if job_id is not None and job_id != getattr(self, "_ocr_job_id", 0):
+            return
         self.progress_bar.setVisible(False)
         self.btn_upload.setEnabled(True)
         self.btn_upload.setText("📁  Upload HAP Report")
@@ -2163,10 +2190,13 @@ class HAPToCarrierApp(QMainWindow):
         if s is None:
             return
         self.current_system_name = name   # drives export filename / content
+        self.picked_df_index = None
+        self.table.clearSelection()
 
         # Nothing changed? Don't re-run the pipeline.
         if (abs(s.btu - self.current_btu) < self._EPS_BTU
-                and abs(s.cfm - self.current_cfm) < self._EPS_CFM):
+                and abs(s.cfm - self.current_cfm) < self._EPS_CFM
+                and abs(s.sensible_btu - self.current_sensible) < self._EPS_BTU):
             self._update_nav_position()
             if not getattr(self, "_nav_silent", False):
                 self.tabs.setCurrentWidget(self.tab_results)
@@ -3000,6 +3030,10 @@ class HAPToCarrierApp(QMainWindow):
         doc.save(path)
 
     def clear_all(self):
+        self._ocr_job_id = getattr(self, "_ocr_job_id", 0) + 1
+        self.progress_bar.setVisible(False)
+        self.btn_upload.setEnabled(True)
+        self.btn_upload.setText("📁  Upload HAP Report")
         self.current_btu      = 0.0
         self.current_cfm      = 0.0
         self.current_sensible = 0.0
@@ -3048,6 +3082,7 @@ class HAPToCarrierApp(QMainWindow):
         self.btn_export.setEnabled(False)
         self.btn_export_sel.setEnabled(False)
         self._render_selected_table()
+        self._roi_update_capacity(0.0, units=1)
         self._set_status("Cleared — ready for a new HAP report.")
 
     # ──────────────────────────────────────────────────────────────
@@ -3126,15 +3161,14 @@ class HAPToCarrierApp(QMainWindow):
             raise
 
     def _roi_update_capacity(self, btu: float, units: int = 1):
-        """Push the freshly read / selected load into the ROI tab."""
+        """Keep ROI inputs synchronized, including explicit zero-load resets."""
         calc = getattr(self, "roi_calculator", None)
         if not ROI_AVAILABLE or calc is None:
             return
         try:
-            if btu and btu > 0:
-                calc.set_capacity_from_load(float(btu), units=int(units))
+            calc.set_capacity_from_load(float(btu), units=int(units))
         except Exception:
-            pass
+            logger.exception("ROI capacity synchronization failed")
 
     # ── Electrical Load helpers (optional, safe) ───────────────────
     def _elec_inputs_results(self):
@@ -3174,15 +3208,19 @@ class HAPToCarrierApp(QMainWindow):
 
     def _elec_sync_from_cart(self):
         tab = getattr(self, "electrical_tab", None)
-        if not ELEC_AVAILABLE or tab is None: return
+        if not ELEC_AVAILABLE or tab is None:
+            return
         try:
             tab.sync_units(
                 self.selected_units,
                 fallback_btu=self.current_btu,
                 fallback_ps="220V / 1Ph",
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.exception("Electrical Schedule synchronization failed")
+            self._set_status(f"Electrical Schedule was not refreshed: {exc}")
+            if hasattr(tab, "last_results"):
+                tab.last_results = None
 
     # ──────────────────────────────────────────────────────────────
     # Shutdown / drag-and-drop
@@ -3320,6 +3358,7 @@ class HAPToCarrierApp(QMainWindow):
         self.selected_units[sys_name] = {
             "units": 1,
             "row": row_data,
+            "effective_btu": float(row_data.get("Effective Btu", row_data.get("Cooling Capacity (Btu/hr)", 0)) or 0),
             "load_btu": self.current_btu,
             "load_cfm": self.current_cfm,
             "load_sensible": self.current_sensible,
@@ -3362,7 +3401,8 @@ class HAPToCarrierApp(QMainWindow):
             QMessageBox.warning(self, "Unit Not Found",
                 f"مش لاقي الموديل {model_name} في الداتابيز.")
             return
-        row_data = ac_row.iloc[0]
+        row_data = ac_row.iloc[0].copy()
+        row_data["Effective Btu"] = float(row_data["Cooling Capacity (Btu/hr)"]) * (1.0 - self.spin_derate.value() / 100.0)
 
         sys_name = (self.current_system_name
                     or self.source_basename
@@ -3372,6 +3412,7 @@ class HAPToCarrierApp(QMainWindow):
         self.selected_units[sys_name] = {
             "units": int(n_units),
             "row": row_data,
+            "effective_btu": float(row_data.get("Effective Btu", row_data.get("Cooling Capacity (Btu/hr)", 0)) or 0),
             "load_btu": self.current_btu,
             "load_cfm": self.current_cfm,
             "load_sensible": self.current_sensible,
@@ -3404,7 +3445,7 @@ class HAPToCarrierApp(QMainWindow):
             load_btu  = float(entry.get("load_btu", 0) or 0)
             load_cfm  = float(entry.get("load_cfm", 0) or 0)
             load_sens = float(entry.get("load_sensible", 0) or 0)
-            unit_btu  = float(r['Cooling Capacity (Btu/hr)'])
+            unit_btu  = float(entry.get("effective_btu", r.get("Effective Btu", r['Cooling Capacity (Btu/hr)'])))
             unit_cfm  = float(r['High CFM (numeric)'])
             total_btu = unit_btu * n_units
             total_cfm = unit_cfm * n_units
@@ -3493,7 +3534,7 @@ class HAPToCarrierApp(QMainWindow):
             load_btu  = float(entry.get("load_btu", 0) or 0)
             load_cfm  = float(entry.get("load_cfm", 0) or 0)
             load_sens = float(entry.get("load_sensible", 0) or 0)
-            unit_btu  = float(r['Cooling Capacity (Btu/hr)'])
+            unit_btu  = float(entry.get("effective_btu", r.get("Effective Btu", r['Cooling Capacity (Btu/hr)'])))
             unit_cfm  = float(r['High CFM (numeric)'])
             total_btu = unit_btu * n_units
             total_cfm = unit_cfm * n_units

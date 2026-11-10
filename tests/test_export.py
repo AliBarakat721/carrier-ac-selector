@@ -128,3 +128,105 @@ def test_export_failures_are_logged_and_propagated(tmp_path, caplog):
             str(missing_xlsx), _electrical_rows(), _electrical_summary()
         )
     assert "Failed to append electrical sheet to Excel" in caplog.text
+
+    class BrokenDocument:
+        def add_page_break(self):
+            raise RuntimeError("simulated Word export failure")
+
+    caplog.clear()
+    with pytest.raises(RuntimeError, match="simulated Word export failure"):
+        roi_tab.append_roi_section_to_docx(BrokenDocument(), roi_inputs, roi_result)
+    assert "Failed to append ROI section to Word document" in caplog.text
+
+    caplog.clear()
+    with pytest.raises(RuntimeError, match="simulated Word export failure"):
+        main.append_electrical_section_to_docx(
+            BrokenDocument(), _electrical_rows(), _electrical_summary()
+        )
+    assert "Failed to append electrical section to Word document" in caplog.text
+
+
+def test_atomic_export_replaces_only_after_success(tmp_path):
+    final_path = tmp_path / "report.xlsx"
+    final_path.write_text("original", encoding="utf-8")
+
+    with main._atomic_export(str(final_path)) as temporary_path:
+        Path(temporary_path).write_text("complete", encoding="utf-8")
+    assert final_path.read_text(encoding="utf-8") == "complete"
+
+    with pytest.raises(RuntimeError, match="simulated failure"):
+        with main._atomic_export(str(final_path)) as temporary_path:
+            Path(temporary_path).write_text("partial", encoding="utf-8")
+            raise RuntimeError("simulated failure")
+    assert final_path.read_text(encoding="utf-8") == "complete"
+    assert not list(tmp_path.glob(".report.xlsx.*"))
+
+
+def test_standalone_electrical_export_shows_error_without_success(
+    tmp_path, monkeypatch
+):
+    final_path = tmp_path / "electrical.xlsx"
+    messages = []
+
+    class FakeDialog:
+        @staticmethod
+        def getSaveFileName(*_args):
+            return str(final_path), ""
+
+    class FakeMessageBox:
+        @staticmethod
+        def critical(*_args):
+            messages.append("critical")
+
+        @staticmethod
+        def information(*_args):
+            messages.append("information")
+
+    def fail_export(*_args, **_kwargs):
+        raise RuntimeError("simulated electrical failure")
+
+    monkeypatch.setattr(main, "QFileDialog", FakeDialog)
+    monkeypatch.setattr(main, "QMessageBox", FakeMessageBox)
+    monkeypatch.setattr(main, "append_electrical_sheet_to_excel", fail_export)
+
+    fake_tab = type("ElectricalTab", (), {})()
+    fake_tab.last_results = (_electrical_rows(), _electrical_summary())
+    main.ElectricalScheduleTab._export_standalone(fake_tab)
+
+    assert messages == ["critical"]
+    assert not final_path.exists()
+
+
+def test_standalone_roi_export_shows_error_without_success(
+    tmp_path, monkeypatch
+):
+    final_path = tmp_path / "roi.xlsx"
+    messages = []
+
+    class FakeDialog:
+        @staticmethod
+        def getSaveFileName(*_args):
+            return str(final_path), ""
+
+    class FakeMessageBox:
+        @staticmethod
+        def critical(*_args):
+            messages.append("critical")
+
+        @staticmethod
+        def information(*_args):
+            messages.append("information")
+
+    def fail_export(*_args, **_kwargs):
+        raise RuntimeError("simulated ROI failure")
+
+    monkeypatch.setattr(roi_tab, "QFileDialog", FakeDialog)
+    monkeypatch.setattr(roi_tab, "QMessageBox", FakeMessageBox)
+    monkeypatch.setattr(roi_tab, "append_roi_sheet_to_excel", fail_export)
+
+    fake_calculator = type("ROICalculator", (), {})()
+    fake_calculator.get_inputs = lambda: _roi_inputs()
+    roi_tab.InverterROICalculator._export_standalone_roi(fake_calculator)
+
+    assert messages == ["critical"]
+    assert not final_path.exists()

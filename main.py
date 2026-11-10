@@ -30,12 +30,37 @@ import sys
 import os
 import re
 import logging
+import tempfile
+from contextlib import contextmanager
 import pandas as pd
 import core
 import ocr_engine
 import math
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _atomic_export(path: str):
+    """Write an export beside the final path and replace it only on success."""
+    final_path = os.path.abspath(path)
+    directory = os.path.dirname(final_path) or "."
+    suffix = os.path.splitext(final_path)[1] or ".tmp"
+    fd, temporary_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(final_path)}.",
+        suffix=suffix,
+        dir=directory,
+    )
+    os.close(fd)
+    try:
+        yield temporary_path
+        os.replace(temporary_path, final_path)
+    except Exception:
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+        raise
 
 # ── Inverter ROI tab (optional module) ────────────────────────────
 try:
@@ -776,8 +801,16 @@ class ElectricalScheduleTab(QWidget):
         if not path.lower().endswith(".xlsx"):
             path += ".xlsx"
         units, summary = self.last_results
-        pd.DataFrame({"Project": ["Carrier Electrical Schedule"]}).to_excel(path, index=False)
-        append_electrical_sheet_to_excel(path, units, summary)
+        try:
+            with _atomic_export(path) as temporary_path:
+                pd.DataFrame({"Project": ["Carrier Electrical Schedule"]}).to_excel(
+                    temporary_path, index=False
+                )
+                append_electrical_sheet_to_excel(temporary_path, units, summary)
+        except Exception as exc:
+            logger.exception("Standalone electrical export failed: %s", path)
+            QMessageBox.critical(self, "Export Error", str(exc))
+            return
         QMessageBox.information(self, "Saved", f"Electrical Schedule saved successfully to:\n{path}")
 
 
@@ -1735,17 +1768,18 @@ class HAPToCarrierApp(QMainWindow):
         path = self._normalize_save_path(path, selected_filter)
         ext = os.path.splitext(path)[1].lower()
         try:
-            if ext == ".docx":
-                self._build_word_report(subset, path,
-                                        title_suffix=f"Picked unit ({model})")
-            elif ext == ".csv":
-                self._prepare_export_df(subset).to_csv(
-                    path, index=False, encoding="utf-8-sig")
-            else:
-                self._prepare_export_df(subset).to_excel(path, index=False)
-                _style_excel_file(path)
-                self._roi_append_to_excel(path)
-                self._elec_append_to_excel(path)
+            with _atomic_export(path) as temporary_path:
+                if ext == ".docx":
+                    self._build_word_report(subset, temporary_path,
+                                            title_suffix=f"Picked unit ({model})")
+                elif ext == ".csv":
+                    self._prepare_export_df(subset).to_csv(
+                        temporary_path, index=False, encoding="utf-8-sig")
+                else:
+                    self._prepare_export_df(subset).to_excel(temporary_path, index=False)
+                    _style_excel_file(temporary_path)
+                    self._roi_append_to_excel(temporary_path)
+                    self._elec_append_to_excel(temporary_path)
             self._set_status(f"✅  Picked unit exported → {path}")
             QMessageBox.information(self, "Export Successful",
                                     f"{model} saved to:\n{path}")
@@ -2082,27 +2116,28 @@ class HAPToCarrierApp(QMainWindow):
         path = self._normalize_save_path(path, selected_filter)
         ext = os.path.splitext(path)[1].lower()
         try:
-            if ext == ".docx":
-                self._build_batch_word_report(
-                    self.batch_results, path,
-                    title_suffix=f"Systems summary ({len(self.batch_results)})")
-            else:
-                out = self.batch_results.copy()
-                for col in ("Load (Btu/hr)", "Sensible (Btu/hr)", "Required CFM",
-                            "Unit Btu", "Total Btu", "Unit CFM", "Total CFM"):
-                    if col in out.columns:
-                        out[col] = out[col].round(0)
-                for col in ("Excess %", "CFM Cover %", "Load (Tons)"):
-                    if col in out.columns:
-                        out[col] = out[col].round(1)
-                out = out.fillna("")
-                if ext == ".csv":
-                    out.to_csv(path, index=False, encoding="utf-8-sig")
+            with _atomic_export(path) as temporary_path:
+                if ext == ".docx":
+                    self._build_batch_word_report(
+                        self.batch_results, temporary_path,
+                        title_suffix=f"Systems summary ({len(self.batch_results)})")
                 else:
-                    out.to_excel(path, index=False)
-                _style_excel_file(path)
-                self._roi_append_to_excel(path)
-                self._elec_append_to_excel(path)
+                    out = self.batch_results.copy()
+                    for col in ("Load (Btu/hr)", "Sensible (Btu/hr)", "Required CFM",
+                                "Unit Btu", "Total Btu", "Unit CFM", "Total CFM"):
+                        if col in out.columns:
+                            out[col] = out[col].round(0)
+                    for col in ("Excess %", "CFM Cover %", "Load (Tons)"):
+                        if col in out.columns:
+                            out[col] = out[col].round(1)
+                    out = out.fillna("")
+                    if ext == ".csv":
+                        out.to_csv(temporary_path, index=False, encoding="utf-8-sig")
+                    else:
+                        out.to_excel(temporary_path, index=False)
+                    _style_excel_file(temporary_path)
+                    self._roi_append_to_excel(temporary_path)
+                    self._elec_append_to_excel(temporary_path)
             self._set_status(f"✅  Systems summary exported → {path}")
             QMessageBox.information(self, "Export Successful",
                                     f"File saved to:\n{path}")
@@ -2575,20 +2610,21 @@ class HAPToCarrierApp(QMainWindow):
         ext = os.path.splitext(path)[1].lower()
 
         try:
-            if ext == ".docx":
-                self._build_word_report(
-                    self.current_results, path,
-                    title_suffix=f"All matches ({len(self.current_results)} unit(s))",
-                )
-            elif ext == ".csv":
-                export_df = self._prepare_export_df(self.current_results)
-                export_df.to_csv(path, index=False, encoding="utf-8-sig")
-            else:
-                export_df = self._prepare_export_df(self.current_results)
-                export_df.to_excel(path, index=False)
-                _style_excel_file(path)
-                self._roi_append_to_excel(path)
-                self._elec_append_to_excel(path)
+            with _atomic_export(path) as temporary_path:
+                if ext == ".docx":
+                    self._build_word_report(
+                        self.current_results, temporary_path,
+                        title_suffix=f"All matches ({len(self.current_results)} unit(s))",
+                    )
+                elif ext == ".csv":
+                    export_df = self._prepare_export_df(self.current_results)
+                    export_df.to_csv(temporary_path, index=False, encoding="utf-8-sig")
+                else:
+                    export_df = self._prepare_export_df(self.current_results)
+                    export_df.to_excel(temporary_path, index=False)
+                    _style_excel_file(temporary_path)
+                    self._roi_append_to_excel(temporary_path)
+                    self._elec_append_to_excel(temporary_path)
 
             self._set_status(f"Results exported → {path}")
             QMessageBox.information(
@@ -2657,20 +2693,21 @@ class HAPToCarrierApp(QMainWindow):
         ext = os.path.splitext(path)[1].lower()
 
         try:
-            if ext == ".docx":
-                self._build_word_report(
-                    subset, path,
-                    title_suffix=f"Selected units ({len(subset)})",
-                )
-            elif ext == ".csv":
-                export_df = self._prepare_export_df(subset)
-                export_df.to_csv(path, index=False, encoding="utf-8-sig")
-            else:
-                export_df = self._prepare_export_df(subset)
-                export_df.to_excel(path, index=False)
-                _style_excel_file(path)
-                self._roi_append_to_excel(path)
-                self._elec_append_to_excel(path)
+            with _atomic_export(path) as temporary_path:
+                if ext == ".docx":
+                    self._build_word_report(
+                        subset, temporary_path,
+                        title_suffix=f"Selected units ({len(subset)})",
+                    )
+                elif ext == ".csv":
+                    export_df = self._prepare_export_df(subset)
+                    export_df.to_csv(temporary_path, index=False, encoding="utf-8-sig")
+                else:
+                    export_df = self._prepare_export_df(subset)
+                    export_df.to_excel(temporary_path, index=False)
+                    _style_excel_file(temporary_path)
+                    self._roi_append_to_excel(temporary_path)
+                    self._elec_append_to_excel(temporary_path)
 
             self._set_status(
                 f"✅  Exported {len(subset)} selected unit(s) → {path}"
@@ -2704,23 +2741,24 @@ class HAPToCarrierApp(QMainWindow):
         ext = os.path.splitext(path)[1].lower()
 
         try:
-            if ext == ".docx":
-                self._build_multi_word_report(
-                    multi, path,
-                    title_suffix=f"Multi-unit options ({len(multi)})")
-            else:
-                out = multi.round({"Excess %": 1, "Unit Btu": 0, "Total Btu": 0,
-                                   "Unit CFM": 0, "Total CFM": 0}).fillna("")
-                # Prepend the active HAP system name so the file is self-describing
-                if self.current_system_name:
-                    out.insert(0, "System", self.current_system_name)
-                if ext == ".csv":
-                    out.to_csv(path, index=False, encoding="utf-8-sig")
+            with _atomic_export(path) as temporary_path:
+                if ext == ".docx":
+                    self._build_multi_word_report(
+                        multi, temporary_path,
+                        title_suffix=f"Multi-unit options ({len(multi)})")
                 else:
-                    out.to_excel(path, index=False)
-                _style_excel_file(path)
-                self._roi_append_to_excel(path)
-                self._elec_append_to_excel(path)
+                    out = multi.round({"Excess %": 1, "Unit Btu": 0, "Total Btu": 0,
+                                       "Unit CFM": 0, "Total CFM": 0}).fillna("")
+                    # Prepend the active HAP system name so the file is self-describing
+                    if self.current_system_name:
+                        out.insert(0, "System", self.current_system_name)
+                    if ext == ".csv":
+                        out.to_csv(temporary_path, index=False, encoding="utf-8-sig")
+                    else:
+                        out.to_excel(temporary_path, index=False)
+                    _style_excel_file(temporary_path)
+                    self._roi_append_to_excel(temporary_path)
+                    self._elec_append_to_excel(temporary_path)
             self._set_status(f"✅  Multi-unit exported → {path}")
             QMessageBox.information(self, "Export Successful",
                                     f"File saved to:\n{path}")
@@ -3437,16 +3475,17 @@ class HAPToCarrierApp(QMainWindow):
         path = self._normalize_save_path(path, selected_filter)
         ext = os.path.splitext(path)[1].lower()
         try:
-            if ext == ".docx":
-                self._build_cart_word_report(path)
-            elif ext == ".csv":
-                self._prepare_cart_export_df().to_csv(
-                    path, index=False, encoding="utf-8-sig")
-            else:
-                self._prepare_cart_export_df().to_excel(path, index=False)
-                _style_excel_file(path)
-                self._roi_append_to_excel(path)
-                self._elec_append_to_excel(path)
+            with _atomic_export(path) as temporary_path:
+                if ext == ".docx":
+                    self._build_cart_word_report(temporary_path)
+                elif ext == ".csv":
+                    self._prepare_cart_export_df().to_csv(
+                        temporary_path, index=False, encoding="utf-8-sig")
+                else:
+                    self._prepare_cart_export_df().to_excel(temporary_path, index=False)
+                    _style_excel_file(temporary_path)
+                    self._roi_append_to_excel(temporary_path)
+                    self._elec_append_to_excel(temporary_path)
             self._set_status(f"✅  {len(self.selected_units)} system(s) → {path}")
             QMessageBox.information(self, "Export Successful",
                 f"{len(self.selected_units)} system(s) saved to:\n{path}")

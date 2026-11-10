@@ -30,6 +30,7 @@ import sys
 import os
 import re
 import logging
+import errno
 import tempfile
 from contextlib import contextmanager
 import pandas as pd
@@ -74,6 +75,26 @@ def _atomic_export(path: str):
             pass
         raise
 
+
+def _replace_export_extension(path: str, required_ext: str) -> str:
+    """Replace only a known export suffix; preserve dots in names like AHU 1.2."""
+    base, suffix = os.path.splitext(path)
+    if suffix.lower() in {".xlsx", ".docx", ".csv"}:
+        path = base
+    return f"{path}.{required_ext.lstrip('.')}"
+
+
+def _export_error_message(exc: Exception) -> str:
+    """Explain common Windows file-lock failures in terms users can fix."""
+    if (isinstance(exc, PermissionError)
+            or getattr(exc, "errno", None) in {errno.EACCES, errno.EPERM, errno.EBUSY}):
+        return (
+            "The export could not replace the destination file. If it is open in "
+            "Excel or Word, close it and try again; also check that you have "
+            "permission to write to the selected folder."
+        )
+    return str(exc)
+
 # ── Inverter ROI tab (optional module) ────────────────────────────
 try:
     import roi_tab
@@ -111,7 +132,6 @@ try:
     from docx import Document
     from docx.shared import Pt, RGBColor, Inches
     from docx.enum.text import WD_ALIGN_PARAGRAPH
-    from docx.enum.table import WD_ALIGN_VERTICAL
     DOCX_AVAILABLE = True
 except ImportError:
     DOCX_AVAILABLE = False
@@ -821,7 +841,7 @@ class ElectricalScheduleTab(QWidget):
                 append_electrical_sheet_to_excel(temporary_path, units, summary)
         except Exception as exc:
             logger.exception("Standalone electrical export failed: %s", path)
-            QMessageBox.critical(self, "Export Error", str(exc))
+            QMessageBox.critical(self, "Export Error", _export_error_message(exc))
             return
         QMessageBox.information(self, "Saved", f"Electrical Schedule saved successfully to:\n{path}")
 
@@ -1839,7 +1859,7 @@ class HAPToCarrierApp(QMainWindow):
             QMessageBox.information(self, "Export Successful",
                                     f"{model} saved to:\n{path}")
         except Exception as exc:
-            QMessageBox.critical(self, "Export Error", str(exc))
+            QMessageBox.critical(self, "Export Error", _export_error_message(exc))
 
     def _render_table(self, df: pd.DataFrame):
         """Populate the results table; first row (least oversized) highlighted."""
@@ -2197,7 +2217,7 @@ class HAPToCarrierApp(QMainWindow):
             QMessageBox.information(self, "Export Successful",
                                     f"File saved to:\n{path}")
         except Exception as exc:
-            QMessageBox.critical(self, "Export Error", str(exc))
+            QMessageBox.critical(self, "Export Error", _export_error_message(exc))
 
     def _build_batch_word_report(self, batch, path, title_suffix=""):
         """Word report: one row per detected system + best matching unit."""
@@ -2561,9 +2581,7 @@ class HAPToCarrierApp(QMainWindow):
         if not m:
             return path
         required_ext = m.group(1)
-        # Strip any trailing dot-extension, then add the required one
-        base = re.sub(r'\.[^./\\]*$', '', path)
-        return f"{base}.{required_ext}"
+        return _replace_export_extension(path, required_ext)
 
     def _default_export_name(self, ext="xlsx", suffix=""):
         """Default filename for export.
@@ -2604,8 +2622,7 @@ class HAPToCarrierApp(QMainWindow):
             dlg.setDefaultSuffix(ext)
             files = dlg.selectedFiles()
             cur = files[0] if files else default_path
-            base = re.sub(r'\.[^./\\]*$', '', cur)
-            dlg.selectFile(f"{base}.{ext}")
+            dlg.selectFile(_replace_export_extension(cur, ext))
 
         dlg.filterSelected.connect(_sync)
         if dlg.exec() != QFileDialog.Accepted:
@@ -2686,7 +2703,7 @@ class HAPToCarrierApp(QMainWindow):
                 self, "Export Successful", f"File saved to:\n{path}"
             )
         except Exception as exc:
-            QMessageBox.critical(self, "Export Error", str(exc))
+            QMessageBox.critical(self, "Export Error", _export_error_message(exc))
 
     def _on_selection_changed(self):
         """Update UI when the user selects/deselects rows in the results table."""
@@ -2772,7 +2789,7 @@ class HAPToCarrierApp(QMainWindow):
                 f"{len(subset)} selected unit(s) saved to:\n{path}"
             )
         except Exception as exc:
-            QMessageBox.critical(self, "Export Error", str(exc))
+            QMessageBox.critical(self, "Export Error", _export_error_message(exc))
 
     def _export_multi(self):
         """Export the multi-unit options table to Excel / Word / CSV."""
@@ -2818,7 +2835,7 @@ class HAPToCarrierApp(QMainWindow):
             QMessageBox.information(self, "Export Successful",
                                     f"File saved to:\n{path}")
         except Exception as exc:
-            QMessageBox.critical(self, "Export Error", str(exc))
+            QMessageBox.critical(self, "Export Error", _export_error_message(exc))
 
     def _build_multi_word_report(self, multi, path, title_suffix=""):
         """Write a formatted Word report for multi-unit combinations."""
@@ -3545,7 +3562,7 @@ class HAPToCarrierApp(QMainWindow):
             QMessageBox.information(self, "Export Successful",
                 f"{len(self.selected_units)} system(s) saved to:\n{path}")
         except Exception as exc:
-            QMessageBox.critical(self, "Export Error", str(exc))
+            QMessageBox.critical(self, "Export Error", _export_error_message(exc))
 
     def _build_cart_word_report(self, path):
         if not DOCX_AVAILABLE:

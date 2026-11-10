@@ -43,7 +43,10 @@ def to_float(value):
     if value is None:
         return None
     if isinstance(value, (int, float)):
-        return None if pd.isna(value) else float(value)
+        if pd.isna(value):
+            return None
+        result = float(value)
+        return result if math.isfinite(result) else None
     s = str(value).replace("≈", "").strip()
     if s in _NUMERIC_NA:
         return None
@@ -59,13 +62,14 @@ def to_float(value):
         else:
             s = s.replace(',', '.')                    # 10,11 -> 10.11
     try:
-        return float(s)
+        result = float(s)
+        return result if math.isfinite(result) else None
     except ValueError:
         return None
 
 
 def parse_user_number(text):
-    """Safe user number parsing: handles inf/nan, commas as decimals or thousands."""
+    """Parse finite user numbers with comma or dot thousands/decimal separators."""
     if text is None:
         return 0.0
     s = str(text).strip().replace(" ", "")
@@ -87,6 +91,10 @@ def parse_user_number(text):
         else:
             # فاصلة عشرية مثل 12,5
             s = s.replace(',', '.')
+    elif re.fullmatch(r'\d{1,3}(?:\.\d{3})+', s):
+        # A lone dot between three-digit groups is a thousands separator in
+        # common European/Egyptian notation (e.g. 82.800 -> 82800).
+        s = s.replace('.', '')
 
     try:
         val = float(s)
@@ -337,6 +345,24 @@ def _apply_category_type(df, category, type_, power_supply=None, series=None):
     return df
 
 
+def _validate_selection_inputs(btu, cfm, safety_pct, cfm_cover_pct,
+                               derate_pct, sensible_btu=0.0):
+    """Prevent NaN/inf inputs from turning filter comparisons into all-match results."""
+    for name, value in (("btu", btu), ("cfm", cfm),
+                        ("safety_pct", safety_pct),
+                        ("cfm_cover_pct", cfm_cover_pct),
+                        ("derate_pct", derate_pct),
+                        ("sensible_btu", sensible_btu)):
+        try:
+            finite = math.isfinite(value)
+        except TypeError:
+            finite = False
+        if not finite:
+            raise ValueError(f"{name} must be a finite number.")
+    if btu < 0 or cfm < 0 or sensible_btu < 0:
+        raise ValueError("btu, cfm, and sensible_btu cannot be negative.")
+
+
 def select_units(df, btu, cfm, *, safety_pct=0.0, cfm_cover_pct=100.0,
                  derate_pct=0.0, category=None, type_=None,
                  power_supply=None, series=None,
@@ -351,6 +377,8 @@ def select_units(df, btu, cfm, *, safety_pct=0.0, cfm_cover_pct=100.0,
     Adds columns: Effective Btu, Excess %, CFM Coverage %, Sensible OK.
     Ranked by smallest excess, then highest EER, then highest CFM.
     """
+    _validate_selection_inputs(btu, cfm, safety_pct, cfm_cover_pct,
+                               derate_pct, sensible_btu)
     target_btu = btu * (1.0 + safety_pct / 100.0)
     need_cfm = cfm * cover_factor(cfm_cover_pct)
 
@@ -399,6 +427,7 @@ def multi_unit_options(df, btu, cfm, *, safety_pct=0.0, cfm_cover_pct=100.0,
     Respects the Category / Type filters, the safety factor, derating and the
     CFM coverage; options needing more than `max_units` units are dropped.
     """
+    _validate_selection_inputs(btu, cfm, safety_pct, cfm_cover_pct, derate_pct)
     target_btu = btu * (1.0 + safety_pct / 100.0)
     need_cfm = cfm * cover_factor(cfm_cover_pct)
     if target_btu <= 0 and need_cfm <= 0:

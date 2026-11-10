@@ -134,16 +134,27 @@ def calculate_unit_electrical(
     current_a_catalog: float | None = None,
 ) -> dict:
     """Calculate FLA, Breaker, Cable mm2, and Voltage Drop for a single HVAC unit."""
-    # Fail loudly on NaN — a silent NaN used to become 0.5 kW in the max() below.
+    # Reject non-finite inputs before they can silently corrupt sizing results.
     for _name, _v in (("cooling_btu", cooling_btu), ("cooling_kw", cooling_kw),
                       ("eer", eer), ("distance_m", distance_m),
                       ("power_factor", power_factor),
-                      ("ambient_temp_c", ambient_temp_c)):
-        if isinstance(_v, float) and math.isnan(_v):
+                      ("ambient_temp_c", ambient_temp_c),
+                      ("voltage_drop_limit_pct", voltage_drop_limit_pct)):
+        try:
+            finite = math.isfinite(_v)
+        except TypeError:
+            finite = False
+        if not finite:
             raise ValueError(
-                f"calculate_unit_electrical: {_name} is NaN — pass None "
+                f"calculate_unit_electrical: {_name} must be finite (NaN and infinity are invalid) — pass None "
                 f"or a real number (use core.to_float at the boundary)."
             )
+    if not 0.0 < power_factor <= 1.0:
+        raise ValueError("calculate_unit_electrical: power_factor must be in (0, 1].")
+    if distance_m < 0.0:
+        raise ValueError("calculate_unit_electrical: distance_m cannot be negative.")
+    if voltage_drop_limit_pct < 0.0:
+        raise ValueError("calculate_unit_electrical: voltage_drop_limit_pct cannot be negative.")
     if conductor_material != "Cu":
         raise NotImplementedError(
             f"Conductor material {conductor_material!r} is not implemented. "
@@ -244,6 +255,21 @@ def compute_schedule_summary(
     ambient_temp_c: float = 40.0,
 ) -> dict:
     """Compute building panel summary, feeder sizing, and generator/UPS requirements."""
+    for _name, _value in (("diversity_factor", diversity_factor),
+                          ("power_factor", power_factor),
+                          ("distance_to_main_m", distance_to_main_m),
+                          ("ambient_temp_c", ambient_temp_c)):
+        try:
+            finite = math.isfinite(_value)
+        except TypeError:
+            finite = False
+        if not finite:
+            raise ValueError(f"compute_schedule_summary: {_name} must be a finite number.")
+    if not 0.0 < power_factor <= 1.0:
+        raise ValueError("compute_schedule_summary: power_factor must be in (0, 1].")
+    if distance_to_main_m < 0.0:
+        raise ValueError("compute_schedule_summary: distance_to_main_m cannot be negative.")
+
     if not unit_rows:
         return {
             "total_kw": 0.0,
@@ -292,15 +318,23 @@ def compute_schedule_summary(
             chosen_main_cable = size
             break
 
-    # Main Feeder Voltage Drop
-    r_val, x_val = CU_IMPEDANCE.get(chosen_main_cable, (0.1, 0.07))
+    # Main Feeder Voltage Drop — upsize the feeder until the 2% sub-main
+    # target is met, or until the largest listed cable is reached.
     sin_phi = math.sqrt(max(0.0, 1.0 - (power_factor ** 2)))
-    z_term = (r_val * power_factor) + (x_val * sin_phi)
-    if is_three_phase_panel:
-        dv_main = (math.sqrt(3) * demand_fla * distance_to_main_m * z_term) / 1000.0
-    else:
-        dv_main = (2.0 * demand_fla * distance_to_main_m * z_term) / 1000.0
-    main_vdrop_pct = (dv_main / nominal_v) * 100.0
+
+    def compute_main_vdrop(cable_size: float) -> float:
+        r_val, x_val = CU_IMPEDANCE.get(cable_size, (0.1, 0.07))
+        z_term = (r_val * power_factor) + (x_val * sin_phi)
+        factor = math.sqrt(3) if is_three_phase_panel else 2.0
+        dv_main = (factor * demand_fla * distance_to_main_m * z_term) / 1000.0
+        return (dv_main / nominal_v) * 100.0
+
+    main_vdrop_pct = compute_main_vdrop(chosen_main_cable)
+    while (main_vdrop_pct > 2.0
+           and chosen_main_cable < STANDARD_CABLE_SIZES[-1]):
+        next_idx = STANDARD_CABLE_SIZES.index(chosen_main_cable) + 1
+        chosen_main_cable = STANDARD_CABLE_SIZES[next_idx]
+        main_vdrop_pct = compute_main_vdrop(chosen_main_cable)
 
     # Generator sizing: Total kW * 1.25 motor starting factor / 0.85 PF
     generator_kva = round((total_kw * 1.25) / power_factor, 1)
@@ -320,11 +354,10 @@ def compute_schedule_summary(
     if main_vdrop_pct > 2.0:
         warnings.append(
             f"⚠️ Main feeder voltage drop is {main_vdrop_pct:.1f}% (> 2.0% sub-main limit). "
-            "Consider stepping up main feeder cross-section."
+            "The largest listed cable still exceeds the limit; have the feeder design reviewed."
         )
 
-    _ecc_main = max(_ecc_size_for(chosen_main_cable),
-                    16.0 if is_three_phase_panel else 10.0)
+    _ecc_main = _ecc_size_for(chosen_main_cable)
     main_cable_desc = (
         f"4×{chosen_main_cable:g} mm² + {_ecc_main:g} mm² E"
         if is_three_phase_panel else

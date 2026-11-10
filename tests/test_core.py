@@ -1,9 +1,25 @@
+import math
 import sys
 from pathlib import Path
+
+import pandas as pd
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import core
+
+
+def test_numeric_parsers_reject_infinity_and_read_grouped_dot_thousands():
+    assert core.to_float("inf") is None
+    assert core.to_float(float("inf")) is None
+    assert core.parse_user_number("82.800") == 82_800.0
+    assert core.parse_user_number("1.234,5") == 1_234.5
+
+
+def test_select_units_rejects_nan_load_instead_of_returning_all_rows():
+    with pytest.raises(ValueError, match="btu must be a finite number"):
+        core.select_units(pd.DataFrame(), math.nan, 0)
 
 
 def _summary(name: str, btu_mbh: int, cfm: int) -> str:

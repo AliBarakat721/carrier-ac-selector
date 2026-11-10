@@ -162,6 +162,37 @@ def test_atomic_export_replaces_only_after_success(tmp_path):
     assert not list(tmp_path.glob(".report.xlsx.*"))
 
 
+def test_dotted_export_basename_is_preserved_when_changing_extension():
+    assert main._replace_export_extension("AHU 1.2", "docx") == "AHU 1.2.docx"
+    assert main._replace_export_extension("AHU 1.xlsx", "docx") == "AHU 1.docx"
+
+
+def test_locked_destination_shows_actionable_message_and_atomic_export_keeps_old_file(
+    tmp_path, monkeypatch
+):
+    final_path = tmp_path / "locked.xlsx"
+    final_path.write_text("original", encoding="utf-8")
+
+    def fail_replace(_source, _destination):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(main.os, "replace", fail_replace)
+    with pytest.raises(PermissionError):
+        with main._atomic_export(str(final_path)) as temporary_path:
+            Path(temporary_path).write_text("incomplete", encoding="utf-8")
+
+    message = main._export_error_message(PermissionError(13, "Permission denied"))
+    roi_message = roi_tab._export_error_message(
+        PermissionError(13, "Permission denied")
+    )
+    assert "Excel or Word" in message
+    assert "Excel or Word" in roi_message
+    assert "Permission denied" not in message
+    assert "Permission denied" not in roi_message
+    assert final_path.read_text(encoding="utf-8") == "original"
+    assert not list(tmp_path.glob(".locked.xlsx.*"))
+
+
 def test_standalone_electrical_export_shows_error_without_success(
     tmp_path, monkeypatch
 ):

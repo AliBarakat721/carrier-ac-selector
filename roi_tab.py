@@ -5,24 +5,35 @@ Pure calculation logic, Excel/Word builders, and PySide6 interactive widget.
 """
 from __future__ import annotations
 
-import re
 import logging
+import errno
 import os
 import tempfile
 from contextlib import contextmanager
-from typing import Optional
 import pandas as pd
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
-    QLabel, QLineEdit, QSpinBox, QDoubleSpinBox, QSlider,
+    QLabel, QSpinBox, QDoubleSpinBox, QSlider,
     QPushButton, QCheckBox, QComboBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QMessageBox, QApplication, QFileDialog
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QColor, QBrush
+from PySide6.QtGui import QColor, QBrush
 
 logger = logging.getLogger(__name__)
+
+
+def _export_error_message(exc: Exception) -> str:
+    """Explain common Windows file-lock failures in terms users can fix."""
+    if (isinstance(exc, PermissionError)
+            or getattr(exc, "errno", None) in {errno.EACCES, errno.EPERM, errno.EBUSY}):
+        return (
+            "The export could not replace the destination file. If it is open in "
+            "Excel or Word, close it and try again; also check that you have "
+            "permission to write to the selected folder."
+        )
+    return str(exc)
 
 
 @contextmanager
@@ -301,8 +312,7 @@ def append_roi_sheet_to_excel(excel_path: str, inp: dict, res: dict):
 
 def append_roi_section_to_docx(doc, inp: dict, res: dict):
     try:
-        from docx.shared import Pt, RGBColor, Inches
-        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.shared import Pt, RGBColor
 
         cur = inp.get("currency", "EGP")
         doc.add_page_break()
@@ -702,7 +712,7 @@ class InverterROICalculator(QWidget):
                 append_roi_sheet_to_excel(temporary_path, inp, res)
         except Exception as exc:
             logger.exception("Standalone ROI export failed: %s", path)
-            QMessageBox.critical(self, "Export Error", str(exc))
+            QMessageBox.critical(self, "Export Error", _export_error_message(exc))
             return
         QMessageBox.information(self, "Saved", f"ROI sheet saved successfully to:\n{path}")
 

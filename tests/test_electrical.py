@@ -78,3 +78,42 @@ def test_nan_and_unsupported_conductor_are_rejected():
         electrical.calculate_unit_electrical(
             30_000, 8.79, 10.0, "220V / 1Ph", conductor_material="Al"
         )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"power_factor": 0.0}, "power_factor must be in"),
+        ({"power_factor": 1.5}, "power_factor must be in"),
+        ({"distance_m": -1.0}, "distance_m cannot be negative"),
+    ],
+)
+def test_unit_calculation_rejects_invalid_pf_and_negative_distance(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        electrical.calculate_unit_electrical(
+            30_000, 8.79, 10.0, "220V / 1Ph", **kwargs
+        )
+
+
+def test_main_feeder_earth_is_not_larger_than_small_phase_and_vdrop_upsizes():
+    unit = electrical.calculate_unit_electrical(
+        30_000, 8.79, 10.0, "220V / 1Ph"
+    )
+    short = electrical.compute_schedule_summary([unit], distance_to_main_m=25.0)
+    long = electrical.compute_schedule_summary([unit], distance_to_main_m=50.0)
+
+    assert short["main_cable"] == 4.0
+    assert short["main_cable_desc"] == "2×4 mm² + 4 mm² E"
+    assert long["main_cable"] > short["main_cable"]
+    assert long["main_vdrop_pct"] <= 2.0
+
+
+def test_main_feeder_warns_if_largest_cable_cannot_meet_voltage_drop_target():
+    unit = electrical.calculate_unit_electrical(
+        30_000, 8.79, 10.0, "220V / 1Ph"
+    )
+    summary = electrical.compute_schedule_summary([unit], distance_to_main_m=2500.0)
+
+    assert summary["main_cable"] == electrical.STANDARD_CABLE_SIZES[-1]
+    assert summary["main_vdrop_pct"] > 2.0
+    assert any("largest listed cable" in warning for warning in summary["warnings"])

@@ -225,13 +225,13 @@ catch {
 
     foreach ($relative in $newFiles) {
         try { Remove-Item -LiteralPath (Join-Path $target $relative) -Force -ErrorAction Stop }
-        catch { $rollbackFailures.Add("remove $relative: $($_.Exception.Message)") }
+        catch { $rollbackFailures.Add("remove $($relative): $($_.Exception.Message)") }
     }
     foreach ($relative in $changed) {
         $backupPath = Join-Path $fileBackup $relative
         if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
             try { Copy-Item -LiteralPath $backupPath -Destination (Join-Path $target $relative) -Force -ErrorAction Stop }
-            catch { $rollbackFailures.Add("restore $relative: $($_.Exception.Message)") }
+            catch { $rollbackFailures.Add("restore $($relative): $($_.Exception.Message)") }
         }
     }
 

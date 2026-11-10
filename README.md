@@ -17,6 +17,8 @@ Desktop tool built with PySide6 that reads a HAP *Air System Sizing Summary* scr
 - **Export:** Excel, CSV, and formatted Word reports.
 - **UI:** dark PySide6 interface, background OCR worker, image/PDF preview, and OCR debug tab.
 
+For the complete end-user workflow, see the [detailed User Guide](docs/USER_GUIDE.md).
+
 ## Requirements
 
 - Python 3.10 or newer.

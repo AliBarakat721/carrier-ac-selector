@@ -838,12 +838,12 @@ class ElectricalScheduleTab(QWidget):
                 f"{r['mcb_size']} A",
                 r["cable_desc"],
                 f"{r['vdrop_pct']:.2f}%",
-                "✅ OK" if r["vdrop_ok"] else "⚠️ High",
+                "⚠️ Review" if not r.get("design_verified", False) else ("✅ OK" if r["vdrop_ok"] else "⚠️ High"),
             ]
             for c_i, txt in enumerate(cells):
                 item = QTableWidgetItem(txt)
                 item.setTextAlignment(Qt.AlignCenter if c_i not in (1, 2, 8) else (Qt.AlignLeft | Qt.AlignVCenter))
-                if c_i == 10 and not r["vdrop_ok"]:
+                if c_i == 10 and (not r["vdrop_ok"] or not r.get("design_verified", False)):
                     item.setForeground(QBrush(QColor("#f87171")))
                 self.table.setItem(r_i, c_i, item)
 

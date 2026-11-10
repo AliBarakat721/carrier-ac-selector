@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import stat
 import zipfile
 
@@ -28,7 +29,7 @@ def _write_valid_archive(path, extra_files=None):
 
 
 def test_application_version_is_semver():
-    assert APP_VERSION == "2.0.0"
+    assert re.fullmatch(r"\d+\.\d+\.\d+", APP_VERSION)
 
 
 @pytest.mark.parametrize(
@@ -57,7 +58,7 @@ def test_rejects_unsupported_version_format(value):
 
 def test_check_for_updates_parses_release_and_assets(monkeypatch):
     release = {
-        "tag_name": "v2.0.1",
+        "tag_name": "v2.0.2",
         "body": "Bug fixes",
         "html_url": "https://github.com/AliBarakat721/carrier-ac-selector/releases/tag/v2.0.1",
         "draft": False,
@@ -65,24 +66,24 @@ def test_check_for_updates_parses_release_and_assets(monkeypatch):
         "assets": [
             {
                 "name": updater.WINDOWS_ASSET,
-                "browser_download_url": "https://github.com/AliBarakat721/carrier-ac-selector/releases/download/v2.0.1/update.zip",
+            "browser_download_url": "https://github.com/AliBarakat721/carrier-ac-selector/releases/download/v2.0.2/update.zip",
             },
             {
                 "name": updater.CHECKSUM_ASSET,
-                "browser_download_url": "https://github.com/AliBarakat721/carrier-ac-selector/releases/download/v2.0.1/SHA256SUMS.txt",
+            "browser_download_url": "https://github.com/AliBarakat721/carrier-ac-selector/releases/download/v2.0.2/SHA256SUMS.txt",
             },
         ],
     }
     monkeypatch.setattr(updater, "_request", lambda _url: json.dumps(release).encode())
     result = updater.check_for_updates()
     assert result["update_available"] is True
-    assert result["latest_version"] == "2.0.1"
+    assert result["latest_version"] == "2.0.2"
     assert result["asset_url"].endswith("update.zip")
     assert result["checksum_url"].endswith("SHA256SUMS.txt")
 
 
 def test_new_release_without_required_assets_is_rejected(monkeypatch):
-    release = {"tag_name": "v2.0.1", "assets": []}
+    release = {"tag_name": "v2.0.2", "assets": []}
     monkeypatch.setattr(updater, "_request", lambda _url: json.dumps(release).encode())
     with pytest.raises(UpdateError, match="package or checksum"):
         updater.check_for_updates()
@@ -90,7 +91,7 @@ def test_new_release_without_required_assets_is_rejected(monkeypatch):
 
 def test_release_with_untrusted_asset_url_is_rejected(monkeypatch):
     release = {
-        "tag_name": "v2.0.1",
+        "tag_name": "v2.0.2",
         "assets": [
             {"name": updater.WINDOWS_ASSET, "browser_download_url": "https://evil.example/update.zip"},
             {"name": updater.CHECKSUM_ASSET, "browser_download_url": "https://github.com/checksums"},

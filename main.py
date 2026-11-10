@@ -1844,14 +1844,19 @@ class HAPToCarrierApp(QMainWindow):
     def _render_table(self, df: pd.DataFrame):
         """Populate the results table; first row (least oversized) highlighted."""
         columns = [
-            'Category', 'Series', 'System Model', 'Indoor Unit', 'Outdoor Unit',
-            'Cooling (Btu/hr)', 'Cooling (Tons)', 'Cooling (kW)', 'Excess %',
-            'Airflow (CFM)', 'CFM Cover %', 'Sensible', 'EER', 'Type', 'Power Supply',
+            'Category', 'Series', 'System Model',
+            'Cooling (Btu/hr)', 'Cooling (Tons)', 'Cooling (kW)',
+            'Excess %', 'Airflow (CFM)', 'CFM Cover %', 'Sensible', 'EER',
+            'Indoor Unit', 'Outdoor Unit', 'Type', 'Power Supply',
         ]
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(df))
         self.table.setColumnCount(len(columns))
         self.table.setHorizontalHeaderLabels(columns)
+        # Keep the key selection metrics visible before detailed indoor/outdoor models.
+        self.table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeToContents
+        )
 
         BEST_BG, BEST_FG, NORM_FG = QColor("#0d2e1c"), QColor("#34d399"), QColor("#e2e8f0")
 
@@ -1866,8 +1871,6 @@ class HAPToCarrierApp(QMainWindow):
                 (self._txt(r['Category']), None),
                 (self._txt(r['Series']), None),
                 (self._txt(r['System Model']), None),
-                (self._txt(r['Indoor Unit Model']), None),
-                (self._txt(r['Outdoor Unit Model']), None),
                 (f"{btu:,.0f}", btu),
                 (f"{btu/core.BTU_PER_TON:.2f}", btu),
                 (f"{btu/core.BTU_PER_KW:.2f}", btu),
@@ -1878,6 +1881,8 @@ class HAPToCarrierApp(QMainWindow):
                  QColor("#f87171") if r['Sensible OK'] == '✘' else (QColor("#34d399") if r['Sensible OK'] == '✔' else None),
                  QColor("#450a0a") if r['Sensible OK'] == '✘' else None),
                 ("" if pd.isna(eer) else f"{eer:g}", None if pd.isna(eer) else float(eer)),
+                (self._txt(r['Indoor Unit Model']), None),
+                (self._txt(r['Outdoor Unit Model']), None),
                 (self._txt(r['Type']), None),
                 (self._txt(r['Power Supply']), None),
             ]

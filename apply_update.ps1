@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory=$true)][string]$Archive,
     [Parameter(Mandatory=$true)][string]$TargetDir,
     [Parameter(Mandatory=$true)][int]$WaitPid,
-    [switch]$Restart
+    [switch]$Restart,
+    [switch]$ValidateOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -110,6 +111,10 @@ try {
     }
 
     Test-UpdateArchive $Archive
+    if ($ValidateOnly) {
+        Write-Host "Update archive validation passed."
+        return
+    }
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
     New-Item -ItemType Directory -Path $fileBackup -Force | Out-Null
     Expand-Archive -LiteralPath $Archive -DestinationPath $stage -Force

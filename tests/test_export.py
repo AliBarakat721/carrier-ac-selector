@@ -1,7 +1,9 @@
+import logging
 import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from docx import Document
 from openpyxl import load_workbook
 
@@ -98,3 +100,31 @@ def test_word_export_helpers_create_readable_sections(tmp_path):
     assert "Inverter vs Fixed Speed" in text
     assert "HVAC Electrical Load" in text
     assert len(reopened.tables) >= 2
+
+
+def test_export_failures_are_logged_and_propagated(tmp_path, caplog):
+    missing_xlsx = tmp_path / "missing.xlsx"
+    missing_docx = tmp_path / "missing.docx"
+    roi_inputs = _roi_inputs()
+    roi_result = roi_tab.compute_roi(
+        **{key: value for key, value in roi_inputs.items() if key != "currency"}
+    )
+
+    caplog.set_level(logging.ERROR)
+    with pytest.raises(FileNotFoundError):
+        main._style_excel_file(str(missing_xlsx))
+    assert "Failed to style Excel export" in caplog.text
+
+    caplog.clear()
+    with pytest.raises(FileNotFoundError):
+        roi_tab.append_roi_sheet_to_excel(
+            str(missing_xlsx), roi_inputs, roi_result
+        )
+    assert "Failed to append ROI sheet to Excel" in caplog.text
+
+    caplog.clear()
+    with pytest.raises(FileNotFoundError):
+        main.append_electrical_sheet_to_excel(
+            str(missing_xlsx), _electrical_rows(), _electrical_summary()
+        )
+    assert "Failed to append electrical sheet to Excel" in caplog.text

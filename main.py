@@ -29,10 +29,13 @@ Improvements over v1:
 import sys
 import os
 import re
+import logging
 import pandas as pd
 import core
 import ocr_engine
 import math
+
+logger = logging.getLogger(__name__)
 
 # ── Inverter ROI tab (optional module) ────────────────────────────
 try:
@@ -345,7 +348,8 @@ def _style_excel_file(path: str):
 
         wb.save(path)
     except Exception:
-        pass
+        logger.exception("Failed to style Excel export: %s", path)
+        raise
 
 # ══════════════════════════════════════════════════════════════
 #  Electrical Load Schedule (merged from electrical_tab.py)
@@ -441,7 +445,8 @@ def append_electrical_sheet_to_excel(excel_path: str, unit_rows: list[dict], sum
 
         wb.save(excel_path)
     except Exception:
-        pass
+        logger.exception("Failed to append electrical sheet to Excel: %s", excel_path)
+        raise
 
 
 def append_electrical_section_to_docx(doc, unit_rows: list[dict], summary: dict):
@@ -498,7 +503,8 @@ def append_electrical_section_to_docx(doc, unit_rows: list[dict], summary: dict)
                 p_w.runs[0].font.size = Pt(9)
                 p_w.runs[0].font.color.rgb = RGBColor(0xB9, 0x1C, 0x1C)
     except Exception:
-        pass
+        logger.exception("Failed to append electrical section to Word document")
+        raise
 
 
 class ElectricalScheduleTab(QWidget):
@@ -2947,7 +2953,8 @@ class HAPToCarrierApp(QMainWindow):
                 **{k: v for k, v in inp.items() if k != "currency"})
             return inp, res
         except Exception:
-            return None, None
+            logger.exception("Failed to calculate ROI data for export")
+            raise
 
     def _roi_append_to_excel(self, path: str):
         """Append the ROI sheet to `path` if the checkbox is ticked."""
@@ -2964,7 +2971,8 @@ class HAPToCarrierApp(QMainWindow):
         try:
             append_roi_sheet_to_excel(path, inp, res)
         except Exception:
-            pass
+            logger.exception("Failed to append ROI sheet during Excel export: %s", path)
+            raise
 
     def _roi_append_to_docx(self, doc):
         """Append the ROI section to an in-memory docx Document."""
@@ -2979,7 +2987,8 @@ class HAPToCarrierApp(QMainWindow):
         try:
             append_roi_section_to_docx(doc, inp, res)
         except Exception:
-            pass
+            logger.exception("Failed to append ROI section during Word export")
+            raise
 
     def _roi_update_capacity(self, btu: float, units: int = 1):
         """Push the freshly read / selected load into the ROI tab."""
@@ -3000,7 +3009,8 @@ class HAPToCarrierApp(QMainWindow):
         try:
             return getattr(tab, "last_results", (None, None))
         except Exception:
-            return None, None
+            logger.exception("Failed to read electrical data for export")
+            raise
 
     def _elec_append_to_excel(self, path: str):
         tab = getattr(self, "electrical_tab", None)
@@ -3012,7 +3022,8 @@ class HAPToCarrierApp(QMainWindow):
         try:
             append_electrical_sheet_to_excel(path, units, summary)
         except Exception:
-            pass
+            logger.exception("Failed to append electrical sheet during Excel export: %s", path)
+            raise
 
     def _elec_append_to_docx(self, doc):
         tab = getattr(self, "electrical_tab", None)
@@ -3023,7 +3034,8 @@ class HAPToCarrierApp(QMainWindow):
         try:
             append_electrical_section_to_docx(doc, units, summary)
         except Exception:
-            pass
+            logger.exception("Failed to append electrical section during Word export")
+            raise
 
     def _elec_sync_from_cart(self):
         tab = getattr(self, "electrical_tab", None)

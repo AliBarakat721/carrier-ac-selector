@@ -6,6 +6,7 @@ Pure calculation logic, Excel/Word builders, and PySide6 interactive widget.
 from __future__ import annotations
 
 import re
+import logging
 from typing import Optional
 import pandas as pd
 
@@ -17,6 +18,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QColor, QBrush
+
+logger = logging.getLogger(__name__)
 
 
 # ── Pure Calculation Logic ─────────────────────────────────────────────────────
@@ -266,7 +269,8 @@ def append_roi_sheet_to_excel(excel_path: str, inp: dict, res: dict):
 
         wb.save(excel_path)
     except Exception:
-        pass
+        logger.exception("Failed to append ROI sheet to Excel: %s", excel_path)
+        raise
 
 
 def append_roi_section_to_docx(doc, inp: dict, res: dict):
@@ -328,7 +332,8 @@ def append_roi_section_to_docx(doc, inp: dict, res: dict):
         run_rec.font.size = Pt(10)
         run_rec.font.color.rgb = RGBColor(0x1F, 0x4E, 0x79)
     except Exception:
-        pass
+        logger.exception("Failed to append ROI section to Word document")
+        raise
 
 
 # ── PySide6 Interactive UI Widget ─────────────────────────────────────────────

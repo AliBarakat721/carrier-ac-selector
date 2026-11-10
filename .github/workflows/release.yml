@@ -54,6 +54,17 @@ jobs:
             $errors | Format-List
             throw "PowerShell updater syntax validation failed."
           }
+          $stage = Join-Path $env:RUNNER_TEMP "carrier-updater-validation"
+          New-Item -ItemType Directory -Path (Join-Path $stage "data") -Force | Out-Null
+          $required = @("main.py", "core.py", "requirements.txt", "updater.py", "version.py", "apply_update.ps1")
+          foreach ($name in $required) {
+            Set-Content -LiteralPath (Join-Path $stage $name) -Value "# validation fixture"
+          }
+          Set-Content -LiteralPath (Join-Path $stage "data/Carrier_AC_Database.xlsx") -Value "fixture"
+          $validationZip = Join-Path $env:RUNNER_TEMP "carrier-updater-validation.zip"
+          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $validationZip -Force
+          & "$PWD/apply_update.ps1" -Archive $validationZip -TargetDir "$PWD" -WaitPid -1 -ValidateOnly
+          if (-not $?) { throw "Windows update archive validation smoke test failed." }
 
       - name: Build Windows update package
         shell: pwsh

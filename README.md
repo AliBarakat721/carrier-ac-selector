@@ -48,6 +48,16 @@ On Windows, install Tesseract using the UB Mannheim installer and add its instal
 
 ## Install
 
+### Windows — easiest method for non-technical users
+
+1. Download the repository using **Code → Download ZIP**, then extract the ZIP file.
+2. Install Python 3.10 or newer from https://www.python.org/downloads/windows/ and enable **Add Python to PATH** during installation.
+3. Open the extracted project folder and double-click **Start_Carrier.bat**.
+4. On the first launch, the launcher creates the Windows virtual environment, installs the required Python packages, and creates a **Carrier AC Selector** shortcut on the Desktop.
+5. After setup finishes, the application starts. For future use, double-click the **Carrier AC Selector** icon on the Desktop. You can also double-click `Start_Carrier.bat` inside the project folder.
+
+Keep the extracted project folder in its original location after setup. The Desktop shortcut points to that folder, so moving or deleting it will break the shortcut. An internet connection is required for the first-time package installation.
+
 ### Windows (PowerShell)
 
 Open PowerShell in the project directory:

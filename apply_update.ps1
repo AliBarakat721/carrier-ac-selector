@@ -57,6 +57,16 @@ try {
         Copy-Item -LiteralPath $file.FullName -Destination $destination -Force
     }
 
+    # Refresh runtime dependencies in the existing Windows virtual environment.
+    $venvPython = Join-Path $target ".venv\Scripts\python.exe"
+    if (-not (Test-Path $venvPython)) {
+        throw "The Windows virtual environment is missing. Run setup.ps1 before updating."
+    }
+    & $venvPython -m pip install -r (Join-Path $target "requirements.txt")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python dependency installation failed. The application files will be rolled back."
+    }
+
     if ($Restart) {
         $pythonw = Join-Path $target ".venv\Scripts\pythonw.exe"
         $python = Join-Path $target ".venv\Scripts\python.exe"

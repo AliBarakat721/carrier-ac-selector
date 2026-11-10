@@ -233,7 +233,10 @@ def _validate_archive(archive_path: Path) -> None:
                 seen.add(key)
 
                 mode = member.external_attr >> 16
-                if stat.S_ISLNK(mode) or (mode and not (stat.S_ISREG(mode) or stat.S_ISDIR(mode))):
+                file_type = stat.S_IFMT(mode)
+                if file_type == stat.S_IFLNK or (
+                    file_type and file_type not in {stat.S_IFREG, stat.S_IFDIR}
+                ):
                     raise UpdateError("The update package contains a link or special file.")
                 if member.flag_bits & 0x1:
                     raise UpdateError("Encrypted update package entries are not supported.")
@@ -270,7 +273,7 @@ def _validate_archive(archive_path: Path) -> None:
     except UpdateError:
         raise
     except (zipfile.BadZipFile, OSError, RuntimeError) as exc:
-        raise UpdateError("The downloaded update is not a valid or readable ZIP archive.") from exc
+        raise UpdateError("The downloaded update is not a valid ZIP archive or could not be read.") from exc
 
 
 def download_and_launch_update(release: dict, app_dir: str, wait_pid: int) -> None:

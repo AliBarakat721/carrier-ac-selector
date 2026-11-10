@@ -1013,13 +1013,13 @@ class HAPToCarrierApp(QMainWindow):
 
         notes = str(result.get("release_notes") or "No release notes provided.")
         if len(notes) > 5000:
-            notes = notes[:5000] + "\\n\\n[Release notes truncated]"
+            notes = notes[:5000] + "\n\n[Release notes truncated]"
         answer = QMessageBox.question(
             self, "Update Available",
-            f"A new version is available.\\n\\n"
-            f"Installed version: v{result['current_version']}\\n"
-            f"Latest version: v{result['latest_version']}\\n\\n"
-            f"Release notes:\\n{notes}\\n\\n"
+            f"A new version is available.\n\n"
+            f"Installed version: v{result['current_version']}\n"
+            f"Latest version: v{result['latest_version']}\n\n"
+            f"Release notes:\n{notes}\n\n"
             "Download and install this update now?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes,
@@ -1043,7 +1043,7 @@ class HAPToCarrierApp(QMainWindow):
         self._set_status("Update check/install failed.")
         QMessageBox.warning(
             self, "Update Error",
-            f"The application could not complete the update.\\n\\n{message}\\n\\n"
+            f"The application could not complete the update.\n\n{message}\n\n"
             "Your current installation has not been intentionally removed. "
             "You can try again later or download the release manually."
         )
@@ -1062,7 +1062,7 @@ class HAPToCarrierApp(QMainWindow):
         about_action.triggered.connect(
             lambda: QMessageBox.information(
                 self, "About Carrier AC Selector",
-                f"Carrier AC Selector — HAP Report Analyzer\\nVersion {APP_VERSION}\\n\\n"
+                f"Carrier AC Selector — HAP Report Analyzer\nVersion {APP_VERSION}\n\n"
                 "Updates are published through the official GitHub Releases page."
             )
         )

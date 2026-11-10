@@ -1,3 +1,4 @@
+import hashlib
 import json
 import zipfile
 
@@ -87,3 +88,21 @@ def test_invalid_zip_is_rejected(tmp_path):
     archive.write_bytes(b"not a zip archive")
     with pytest.raises(zipfile.BadZipFile):
         updater._validate_archive(archive)
+
+
+def test_sha256_verification_accepts_matching_checksum(tmp_path):
+    archive = tmp_path / updater.WINDOWS_ASSET
+    archive.write_bytes(b"trusted archive bytes")
+    checksum = tmp_path / updater.CHECKSUM_ASSET
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    checksum.write_text(f"{digest}  {updater.WINDOWS_ASSET}\n", encoding="utf-8")
+    updater._verify_sha256(archive, updater._expected_checksum(checksum))
+
+
+def test_sha256_verification_rejects_mismatch(tmp_path):
+    archive = tmp_path / updater.WINDOWS_ASSET
+    archive.write_bytes(b"downloaded archive bytes")
+    checksum = tmp_path / updater.CHECKSUM_ASSET
+    checksum.write_text("0" * 64 + f"  {updater.WINDOWS_ASSET}\n", encoding="utf-8")
+    with pytest.raises(UpdateError, match="SHA-256 verification"):
+        updater._verify_sha256(archive, updater._expected_checksum(checksum))

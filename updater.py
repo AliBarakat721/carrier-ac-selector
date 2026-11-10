@@ -111,6 +111,22 @@ def _download(url: str, destination: Path) -> None:
         raise UpdateError(f"Update download failed: {exc}") from exc
 
 
+def _expected_checksum(checksum_path: Path) -> str:
+    for line in checksum_path.read_text(encoding="utf-8").splitlines():
+        parts = line.strip().split()
+        if len(parts) == 2 and parts[1].lstrip("*") == WINDOWS_ASSET:
+            expected = parts[0].lower()
+            if re.fullmatch(r"[0-9a-f]{64}", expected):
+                return expected
+    raise UpdateError("The release checksum file is missing a valid SHA-256 entry.")
+
+
+def _verify_sha256(archive_path: Path, expected: str) -> None:
+    digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+    if digest != expected.lower():
+        raise UpdateError("The downloaded update failed SHA-256 verification.")
+
+
 def _validate_archive(archive_path: Path) -> None:
     allowed_suffixes = {".py", ".ps1", ".bat", ".txt", ".md", ".yml", ".xlsx"}
     with zipfile.ZipFile(archive_path) as archive:
@@ -147,18 +163,8 @@ def download_and_launch_update(release: dict, app_dir: str, wait_pid: int) -> No
     _download(release["asset_url"], archive_path)
     _download(release["checksum_url"], checksum_path)
 
-    expected = None
-    for line in checksum_path.read_text(encoding="utf-8").splitlines():
-        parts = line.strip().split()
-        if len(parts) == 2 and parts[1].lstrip("*") == WINDOWS_ASSET:
-            expected = parts[0].lower()
-            break
-    if not expected or not re.fullmatch(r"[0-9a-f]{64}", expected):
-        raise UpdateError("The release checksum file is missing a valid SHA-256 entry.")
-
-    digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
-    if digest != expected:
-        raise UpdateError("The downloaded update failed SHA-256 verification.")
+    expected = _expected_checksum(checksum_path)
+    _verify_sha256(archive_path, expected)
     _validate_archive(archive_path)
 
     helper = Path(app_dir) / "apply_update.ps1"

@@ -1,5 +1,9 @@
+import json
+import zipfile
+
 import pytest
 
+import updater
 from updater import APP_VERSION, UpdateError, is_newer_version
 
 
@@ -26,3 +30,60 @@ def test_version_comparison(candidate, current, expected):
 def test_rejects_unsupported_version_format(value):
     with pytest.raises(UpdateError):
         is_newer_version(value, "2.0.0")
+
+
+def test_check_for_updates_parses_release_and_assets(monkeypatch):
+    release = {
+        "tag_name": "v2.0.1",
+        "body": "Bug fixes",
+        "html_url": "https://github.com/AliBarakat721/carrier-ac-selector/releases/tag/v2.0.1",
+        "assets": [
+            {"name": updater.WINDOWS_ASSET, "browser_download_url": "https://example/update.zip"},
+            {"name": updater.CHECKSUM_ASSET, "browser_download_url": "https://example/SHA256SUMS.txt"},
+        ],
+    }
+    monkeypatch.setattr(updater, "_request", lambda _url: json.dumps(release).encode())
+    result = updater.check_for_updates()
+    assert result["update_available"] is True
+    assert result["latest_version"] == "2.0.1"
+    assert result["asset_url"].endswith("update.zip")
+    assert result["checksum_url"].endswith("SHA256SUMS.txt")
+
+
+def test_new_release_without_required_assets_is_rejected(monkeypatch):
+    release = {"tag_name": "v2.0.1", "assets": []}
+    monkeypatch.setattr(updater, "_request", lambda _url: json.dumps(release).encode())
+    with pytest.raises(UpdateError, match="package or checksum"):
+        updater.check_for_updates()
+
+
+def test_safe_archive_is_accepted(tmp_path):
+    archive = tmp_path / "safe.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("main.py", "print('ok')")
+        zf.writestr("data/Carrier_AC_Database.xlsx", "placeholder")
+    updater._validate_archive(archive)
+
+
+@pytest.mark.parametrize("member", ["../escape.txt", "/absolute.txt", "nested/too/deep.py"])
+def test_unsafe_archive_paths_are_rejected(tmp_path, member):
+    archive = tmp_path / "unsafe.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(member, "bad")
+    with pytest.raises(UpdateError):
+        updater._validate_archive(archive)
+
+
+def test_unexpected_file_type_is_rejected(tmp_path):
+    archive = tmp_path / "unexpected.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("malware.exe", "bad")
+    with pytest.raises(UpdateError, match="Unexpected file"):
+        updater._validate_archive(archive)
+
+
+def test_invalid_zip_is_rejected(tmp_path):
+    archive = tmp_path / "invalid.zip"
+    archive.write_bytes(b"not a zip archive")
+    with pytest.raises(zipfile.BadZipFile):
+        updater._validate_archive(archive)

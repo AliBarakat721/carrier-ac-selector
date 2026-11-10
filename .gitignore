@@ -7,3 +7,45 @@ venv/
 *.xlsx
 *.docx
 !data/Carrier_AC_Database.xlsx
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Backup and temporary files
+.patch_backup_*/
+.upgrade/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# LibreOffice lock files
+.~lock*
+
+# Sample documents and images (review before publishing)
+.samples/
+
+# External engineering documents - not approved for publishing
+/G01.RTF
+/Systems_Design_Report.RTF

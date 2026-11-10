@@ -44,9 +44,34 @@ macOS:
 brew install tesseract
 ```
 
-On Windows, install Tesseract from the UB Mannheim distribution and ensure the Tesseract installation directory is on `PATH`.
+On Windows, install Tesseract using the UB Mannheim installer and add its installation directory (commonly `C:\\Program Files\\Tesseract-OCR`) to `PATH`. Restart PowerShell after changing `PATH`.
 
 ## Install
+
+### Windows (PowerShell)
+
+Open PowerShell in the project directory:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\\setup.ps1
+```
+
+The script creates a Windows-specific `.venv\\` and installs all runtime and test dependencies. Then run:
+
+```powershell
+.\\run.ps1
+```
+
+To execute tests on Windows:
+
+```powershell
+.\\test.ps1
+```
+
+If PowerShell blocks scripts, the `Set-ExecutionPolicy` command above changes the policy only for the current PowerShell process.
+
+### Linux / macOS
 
 From the project directory:
 
@@ -110,6 +135,9 @@ tests/test_core.py            Parser regression tests
 setup.sh                      Create the virtual environment and install dependencies
 run.sh                        Activate the environment and start the GUI
 test.sh                        Run tests and syntax checks
+setup.ps1                     Create the Windows virtual environment and install dependencies
+run.ps1                       Start the GUI using the Windows virtual environment
+test.ps1                      Run tests and syntax checks on Windows
 requirements.txt              Runtime dependencies
 requirements-dev.txt          Test/development dependencies
 ```
@@ -126,4 +154,6 @@ requirements-dev.txt          Test/development dependencies
 
 - The electrical schedule is an engineering estimate and must be reviewed against the applicable local electrical code and project design data.
 - Tesseract is an external system package; installing the Python package `pytesseract` alone is not enough for image OCR.
+- A Python `.venv` is operating-system-specific. Create it separately on Windows with `setup.ps1`; do not copy the Linux `.venv` into Windows or commit either environment.
+- Windows and Linux are both covered by the GitHub Actions test matrix. The automated checks validate dependency imports, Python compilation, and unit tests; OCR with the external Tesseract executable still requires a local Windows installation and a real scanned-file test.
 - Generated Excel, Word, virtual-environment, cache, and temporary files are excluded by `.gitignore` where appropriate.

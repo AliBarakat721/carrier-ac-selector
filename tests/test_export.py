@@ -261,3 +261,91 @@ def test_standalone_roi_export_shows_error_without_success(
 
     assert messages == ["critical"]
     assert not final_path.exists()
+
+
+def test_batch_csv_export_does_not_run_excel_post_processing(tmp_path, monkeypatch):
+    final_path = tmp_path / "systems.csv"
+    messages = []
+
+    class FakeMessageBox:
+        @staticmethod
+        def information(*_args):
+            messages.append("information")
+
+        @staticmethod
+        def critical(*_args):
+            messages.append("critical")
+
+    fake_window = type("BatchWindow", (), {})()
+    fake_window.batch_results = pd.DataFrame(
+        {"System": ["G01"], "Load (Btu/hr)": [36_000]}
+    )
+    fake_window._default_export_name = lambda *_args, **_kwargs: "systems.xlsx"
+    fake_window._save_file_dialog = lambda *_args: (str(final_path), "CSV File (*.csv)")
+    fake_window._normalize_save_path = lambda path, _filter: path
+    fake_window._set_status = lambda _message: None
+    fake_window._roi_append_to_excel = lambda *_args: pytest.fail(
+        "ROI Excel post-processing must not run for CSV exports"
+    )
+    fake_window._elec_append_to_excel = lambda *_args: pytest.fail(
+        "Electrical Excel post-processing must not run for CSV exports"
+    )
+    monkeypatch.setattr(main, "QMessageBox", FakeMessageBox)
+
+    main.HAPToCarrierApp._export_batch(fake_window)
+
+    assert messages == ["information"]
+    exported = pd.read_csv(final_path, encoding="utf-8-sig")
+    assert exported.to_dict(orient="records") == [
+        {"System": "G01", "Load (Btu/hr)": 36_000}
+    ]
+
+
+def test_multi_unit_csv_export_does_not_run_excel_post_processing(
+    tmp_path, monkeypatch
+):
+    final_path = tmp_path / "multi.csv"
+    messages = []
+
+    class FakeMessageBox:
+        @staticmethod
+        def information(*_args):
+            messages.append("information")
+
+        @staticmethod
+        def critical(*_args):
+            messages.append("critical")
+
+    multi = pd.DataFrame(
+        {"Unit Btu": [18_000], "Total Btu": [36_000], "Excess %": [0.0]}
+    )
+    fake_window = type("MultiWindow", (), {})()
+    fake_window.df = pd.DataFrame()
+    fake_window.current_btu = 36_000
+    fake_window.current_cfm = 1_200
+    fake_window.current_system_name = "G01"
+    fake_window._filter_args = lambda: {}
+    fake_window._default_export_name = lambda *_args, **_kwargs: "multi.xlsx"
+    fake_window._save_file_dialog = lambda *_args: (str(final_path), "CSV File (*.csv)")
+    fake_window._normalize_save_path = lambda path, _filter: path
+    fake_window._set_status = lambda _message: None
+    fake_window._roi_append_to_excel = lambda *_args: pytest.fail(
+        "ROI Excel post-processing must not run for CSV exports"
+    )
+    fake_window._elec_append_to_excel = lambda *_args: pytest.fail(
+        "Electrical Excel post-processing must not run for CSV exports"
+    )
+    monkeypatch.setattr(main.core, "multi_unit_options", lambda *_args, **_kwargs: multi)
+    monkeypatch.setattr(main, "QMessageBox", FakeMessageBox)
+
+    main.HAPToCarrierApp._export_multi(fake_window)
+
+    assert messages == ["information"]
+    exported = pd.read_csv(final_path, encoding="utf-8-sig")
+    assert list(exported.columns) == ["System", "Unit Btu", "Total Btu", "Excess %"]
+    assert exported.iloc[0].to_dict() == {
+        "System": "G01",
+        "Unit Btu": 18_000,
+        "Total Btu": 36_000,
+        "Excess %": 0.0,
+    }

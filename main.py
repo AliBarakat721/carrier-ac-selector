@@ -2389,9 +2389,9 @@ class HAPToCarrierApp(QMainWindow):
                         out.to_csv(temporary_path, index=False, encoding="utf-8-sig")
                     else:
                         out.to_excel(temporary_path, index=False)
-                    _style_excel_file(temporary_path)
-                    self._roi_append_to_excel(temporary_path)
-                    self._elec_append_to_excel(temporary_path)
+                        _style_excel_file(temporary_path)
+                        self._roi_append_to_excel(temporary_path)
+                        self._elec_append_to_excel(temporary_path)
             self._set_status(f"✅  Systems summary exported → {path}")
             QMessageBox.information(self, "Export Successful",
                                     f"File saved to:\n{path}")
@@ -3007,9 +3007,9 @@ class HAPToCarrierApp(QMainWindow):
                         out.to_csv(temporary_path, index=False, encoding="utf-8-sig")
                     else:
                         out.to_excel(temporary_path, index=False)
-                    _style_excel_file(temporary_path)
-                    self._roi_append_to_excel(temporary_path)
-                    self._elec_append_to_excel(temporary_path)
+                        _style_excel_file(temporary_path)
+                        self._roi_append_to_excel(temporary_path)
+                        self._elec_append_to_excel(temporary_path)
             self._set_status(f"✅  Multi-unit exported → {path}")
             QMessageBox.information(self, "Export Successful",
                                     f"File saved to:\n{path}")

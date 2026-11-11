@@ -57,12 +57,11 @@ def _bulged_points(points: list[tuple[float, float]], bulges: list[float], close
         theta = 4.0 * math.atan(bulge)
         if chord == 0 or abs(theta) < 1e-12:
             continue
-        radius = chord / (2.0 * math.sin(abs(theta) / 2.0))
+        radius = chord * (1.0 + bulge * bulge) / (4.0 * abs(bulge))
         midpoint = ((start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0)
-        offset = math.sqrt(max(0.0, radius * radius - (chord / 2.0) ** 2))
+        offset = chord * (1.0 - bulge * bulge) / (4.0 * bulge)
         normal = (-dy / chord, dx / chord)
-        sign = 1.0 if bulge > 0 else -1.0
-        center = (midpoint[0] + sign * normal[0] * offset, midpoint[1] + sign * normal[1] * offset)
+        center = (midpoint[0] + normal[0] * offset, midpoint[1] + normal[1] * offset)
         start_angle = math.atan2(start[1] - center[1], start[0] - center[0])
         segments = max(2, int(math.ceil(abs(theta) / arc_angle_tolerance)))
         for step in range(1, segments):
@@ -119,13 +118,18 @@ def _closed_polyline_spaces(document: CadDocument, arc_angle_tolerance: float) -
 
 def _snap_line_endpoints(lines: list[tuple[tuple[float, float], tuple[float, float], str | None]], gap_tolerance: float):
     if gap_tolerance <= 0:
-        return lines
+        return lines, []
     endpoints = [point for start, end, _ in lines for point in (start, end)]
     snapped: dict[tuple[float, float], tuple[float, float]] = {}
     for point in endpoints:
         target = next((other for other in snapped.values() if math.hypot(point[0] - other[0], point[1] - other[1]) <= gap_tolerance), None)
         snapped[point] = target or point
-    return [(snapped[start], snapped[end], handle) for start, end, handle in lines]
+    diagnostics = [
+        {"original": point, "snapped_to": target, "distance": math.hypot(point[0] - target[0], point[1] - target[1])}
+        for point, target in snapped.items()
+        if point != target
+    ]
+    return [(snapped[start], snapped[end], handle) for start, end, handle in lines], diagnostics
 
 
 def _line_polygon_spaces(document: CadDocument, starting_index: int, tolerance: float, gap_tolerance: float) -> list[RoomSpace]:
@@ -137,12 +141,13 @@ def _line_polygon_spaces(document: CadDocument, starting_index: int, tolerance: 
         end = entity.data.get("end")
         if start and end and start != end:
             raw_lines.append((start, end, entity.handle))
-    for start, end, handle in _snap_line_endpoints(raw_lines, gap_tolerance):
+    snapped_lines, diagnostics = _snap_line_endpoints(raw_lines, gap_tolerance)
+    for start, end, handle in snapped_lines:
             line = LineString([start, end])
             lines.append(line)
             line_records.append((line, handle))
     if not lines:
-        return []
+        return [], diagnostics
 
     merged = unary_union(lines)
     scale = document.unit_scale_to_meters
@@ -174,7 +179,7 @@ def _line_polygon_spaces(document: CadDocument, starting_index: int, tolerance: 
                 geometry_diagnostic=None,
             )
         )
-    return rooms
+    return rooms, diagnostics
 
 
 def _iou(left: Polygon, right: Polygon) -> float:
@@ -210,6 +215,7 @@ def detect_spaces(
     tolerance: float = 1e-6,
     gap_tolerance: float = 0.0,
     arc_angle_tolerance: float = math.radians(1.0),
+    diagnostics: list[dict[str, object]] | None = None,
 ) -> list[RoomSpace]:
     """Detect candidate rooms and remove near-identical geometric duplicates."""
 
@@ -224,5 +230,8 @@ def detect_spaces(
         raise ValueError("Arc angle tolerance must be positive")
     rooms = _closed_polyline_spaces(document, arc_angle_tolerance)
     if include_wall_lines:
-        rooms.extend(_line_polygon_spaces(document, len(rooms) + 1, tolerance, gap_tolerance))
+        line_rooms, snap_diagnostics = _line_polygon_spaces(document, len(rooms) + 1, tolerance, gap_tolerance)
+        rooms.extend(line_rooms)
+        if diagnostics is not None:
+            diagnostics.extend(snap_diagnostics)
     return _deduplicate_spaces(rooms)

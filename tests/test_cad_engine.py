@@ -1,4 +1,5 @@
 from pathlib import Path
+import math
 
 import ezdxf
 import pytest
@@ -124,6 +125,24 @@ def test_bulge_is_preserved_and_curved_boundary_is_not_flattened(tmp_path):
     assert rooms[0].area != 100.0
 
 
+def test_bulge_arc_area_and_perimeter_converge_to_reference(tmp_path):
+    source = tmp_path / "arc-reference.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    drawing.modelspace().add_lwpolyline(
+        [(0, 0, 0, 0, 1.0), (10, 0), (10, 10), (0, 10)], close=True
+    )
+    drawing.saveas(source)
+    expected_area = 100.0 + math.pi * 25.0 / 2.0
+    expected_perimeter = 30.0 + math.pi * 5.0
+
+    coarse = detect_spaces(source, include_wall_lines=False, arc_angle_tolerance=math.radians(5))[0]
+    precise = detect_spaces(source, include_wall_lines=False, arc_angle_tolerance=math.radians(0.1))[0]
+
+    assert abs(precise.area - expected_area) < abs(coarse.area - expected_area)
+    assert abs(precise.perimeter - expected_perimeter) < 0.001
+
+
 def test_self_intersecting_polygon_is_marked_invalid(tmp_path):
     source = tmp_path / "bow-tie.dxf"
     drawing = ezdxf.new("R2018")
@@ -136,6 +155,25 @@ def test_self_intersecting_polygon_is_marked_invalid(tmp_path):
     assert len(rooms) == 1
     assert rooms[0].status == "INVALID_GEOMETRY"
     assert rooms[0].geometry_diagnostic
+
+
+def test_gap_snapping_reports_moved_endpoints(tmp_path):
+    source = tmp_path / "gap.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    modelspace = drawing.modelspace()
+    modelspace.add_line((0, 0), (5, 0))
+    modelspace.add_line((5.002, 0), (5, 4))
+    modelspace.add_line((5, 4), (0, 4))
+    modelspace.add_line((0, 4), (0, 0))
+    drawing.saveas(source)
+    diagnostics = []
+
+    rooms = detect_spaces(source, gap_tolerance=0.005, diagnostics=diagnostics)
+
+    assert rooms
+    assert diagnostics
+    assert diagnostics[0]["distance"] == pytest.approx(0.002)
 
 
 def test_missing_dxf_is_reported():

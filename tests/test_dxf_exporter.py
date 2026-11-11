@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import ezdxf
+import pytest
 from shapely.geometry import Point, Polygon
 
 from cad.dxf_exporter import export_hvac_dxf, reopen_and_verify
@@ -178,6 +179,32 @@ def test_export_rolls_back_when_second_output_replace_fails(tmp_path, monkeypatc
     assert not schedule.exists()
 
 
+def test_export_restores_existing_outputs_when_schedule_replace_fails(tmp_path, monkeypatch):
+    source = tmp_path / "source.dxf"
+    output = tmp_path / "hvac-output.dxf"
+    schedule = tmp_path / "equipment.csv"
+    make_source(source)
+    export_hvac_dxf(source, output, indoor_units=[indoor()], outdoor_units=[outdoor()], relationships=[], schedule_path=schedule)
+    old_dxf = output.read_bytes()
+    old_schedule = schedule.read_bytes()
+    import cad.dxf_exporter as exporter
+    original_replace = exporter.os.replace
+    calls = {"count": 0}
+
+    def fail_schedule_replace(src, dst):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise OSError("injected replacement failure")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(exporter.os, "replace", fail_schedule_replace)
+    with pytest.raises(OSError):
+        export_hvac_dxf(source, output, indoor_units=[indoor()], outdoor_units=[outdoor()], relationships=[], schedule_path=schedule)
+
+    assert output.read_bytes() == old_dxf
+    assert schedule.read_bytes() == old_schedule
+
+
 def test_unitless_room_export_does_not_label_raw_metrics_as_metric(tmp_path):
     source = tmp_path / "source.dxf"
     output = tmp_path / "hvac-output.dxf"
@@ -213,6 +240,35 @@ def test_unitless_room_export_does_not_label_raw_metrics_as_metric(tmp_path):
     assert values["AREA_M2"] == ""
     assert values["PERIMETER_M"] == ""
     assert values["AREA_SOURCE"] == "UNIT_UNKNOWN"
+
+
+def test_invalid_geometry_room_export_does_not_publish_verified_metrics(tmp_path):
+    source = tmp_path / "source.dxf"
+    output = tmp_path / "hvac-output.dxf"
+    make_source(source)
+    room = SimpleNamespace(
+        room_id="ROOM-BOWTIE",
+        label="Invalid",
+        area=0.0,
+        perimeter=20.0,
+        raw_area=0.0,
+        raw_perimeter=20.0,
+        drawing_units="meters",
+        unit_status="VERIFIED",
+        status="INVALID_GEOMETRY",
+        source="closed_polyline",
+        polygon=Polygon([(0, 0), (5, 5), (0, 5), (5, 0)]),
+    )
+    export_hvac_dxf(source, output, indoor_units=[indoor()], outdoor_units=[outdoor()], relationships=[], rooms=[room])
+
+    exported = ezdxf.readfile(output)
+    room_ref = next(ref for ref in exported.modelspace().query("INSERT") if any(
+        attr.dxf.tag == "ENTITY_ID" and attr.dxf.text == "ROOM-BOWTIE" for attr in ref.attribs
+    ))
+    values = {attr.dxf.tag: attr.dxf.text for attr in room_ref.attribs}
+    assert values["AREA_M2"] == ""
+    assert values["PERIMETER_M"] == ""
+    assert values["AREA_SOURCE"] == "INVALID_GEOMETRY"
 
 
 def test_room_label_uses_point_inside_irregular_room(tmp_path):

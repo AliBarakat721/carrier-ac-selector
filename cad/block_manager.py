@@ -105,7 +105,13 @@ def synchronize_attributes(block_reference: Any, tag_type: str, attributes: Mapp
     """Add missing ATTRIB instances to a legacy INSERT without duplicating values."""
 
     _validate_attributes(tag_type, attributes)
-    existing = {attribute.dxf.tag for attribute in block_reference.attribs}
+    existing: set[str] = set()
+    for attribute in list(block_reference.attribs):
+        tag = attribute.dxf.tag
+        if tag in existing:
+            attribute.destroy()
+        else:
+            existing.add(tag)
     block = block_reference.doc.blocks[block_reference.dxf.name]
     values = {
         field: "" if attributes.get(field) is None else str(attributes.get(field))
@@ -116,7 +122,7 @@ def synchronize_attributes(block_reference: Any, tag_type: str, attributes: Mapp
         if tag not in existing:
             block_reference.add_attrib(tag, values.get(tag, ""), insert=attdef.dxf.insert)
     for attribute in block_reference.attribs:
-        if attribute.dxf.tag in values:
+        if hasattr(attribute, "dxf") and attribute.dxf.tag in values:
             attribute.dxf.text = values[attribute.dxf.tag]
     return block_reference
 

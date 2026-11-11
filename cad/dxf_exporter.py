@@ -83,18 +83,20 @@ def _update_or_insert(
 
 def _room_attributes(room: object) -> dict[str, object]:
     unit_status = getattr(room, "unit_status", "VERIFIED")
+    geometry_status = getattr(room, "status", "NEEDS_REVIEW")
+    metrics_verified = unit_status == "VERIFIED" and geometry_status != "INVALID_GEOMETRY"
     room_id = str(room.room_id)
     entity_id = room_id if room_id.upper().startswith("ROOM-") else f"ROOM-{room_id}"
     return {
         "ENTITY_ID": entity_id,
         "ROOM_ID": room.room_id,
         "ROOM_NAME": room.label or "",
-        "AREA_M2": room.area if unit_status == "VERIFIED" else None,
-        "PERIMETER_M": room.perimeter if unit_status == "VERIFIED" else None,
+        "AREA_M2": room.area if metrics_verified else None,
+        "PERIMETER_M": room.perimeter if metrics_verified else None,
         "DETECTION_STATUS": room.status,
         "ROOM_SOURCE": room.source,
         "GEOMETRY_VERIFICATION": room.status,
-        "AREA_SOURCE": "CAD" if unit_status == "VERIFIED" else "UNIT_UNKNOWN",
+        "AREA_SOURCE": "CAD" if metrics_verified else ("INVALID_GEOMETRY" if geometry_status == "INVALID_GEOMETRY" else "UNIT_UNKNOWN"),
         "AREA_RAW": getattr(room, "raw_area", room.area),
         "PERIMETER_RAW": getattr(room, "raw_perimeter", room.perimeter),
         "DRAWING_UNITS": getattr(room, "drawing_units", "unitless"),

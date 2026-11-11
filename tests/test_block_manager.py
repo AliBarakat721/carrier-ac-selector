@@ -105,10 +105,13 @@ def test_legacy_block_reference_receives_missing_attributes():
     reference = drawing.modelspace().add_blockref("HVAC_INDOOR_UNIT", (3, 4))
     reference.add_attrib("ENTITY_ID", "INDOOR-LEGACY", insert=(0, 0))
     reference.add_attrib("TAG_ID", "IDU-LEGACY", insert=(0, 0))
+    reference.add_attrib("TAG_ID", "IDU-DUPLICATE", insert=(0, 0))
 
     create_block_definition(drawing, "indoor_unit")
     synchronize_attributes(reference, "indoor_unit", indoor_attributes("INDOOR-LEGACY", "IDU-LEGACY"))
 
-    tags = {attribute.dxf.tag for attribute in reference.attribs}
+    live_attributes = [attribute for attribute in reference.attribs if hasattr(attribute, "dxf")]
+    tags = {attribute.dxf.tag for attribute in live_attributes}
     assert set(tag_fields("indoor_unit")) == tags
+    assert sum(attribute.dxf.tag == "TAG_ID" for attribute in live_attributes) == 1
     assert tuple(reference.dxf.insert)[:2] == (3.0, 4.0)

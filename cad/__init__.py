@@ -7,6 +7,7 @@ from .block_manager import (
     create_block_definition,
     insert_block_reference,
     populate_attributes,
+    synchronize_attributes,
     validate_block_definition,
 )
 from .schedule_builder import (
@@ -44,6 +45,7 @@ __all__ = [
     "create_block_definition",
     "insert_block_reference",
     "populate_attributes",
+    "synchronize_attributes",
     "validate_block_definition",
     "build_equipment_schedule",
     "calculate_schedule_metrics",

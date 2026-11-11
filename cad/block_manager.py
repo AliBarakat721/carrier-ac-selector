@@ -101,6 +101,26 @@ def populate_attributes(block_reference: Any, tag_type: str, attributes: Mapping
     return block_reference
 
 
+def synchronize_attributes(block_reference: Any, tag_type: str, attributes: Mapping[str, object]) -> Any:
+    """Add missing ATTRIB instances to a legacy INSERT without duplicating values."""
+
+    _validate_attributes(tag_type, attributes)
+    existing = {attribute.dxf.tag for attribute in block_reference.attribs}
+    block = block_reference.doc.blocks[block_reference.dxf.name]
+    values = {
+        field: "" if attributes.get(field) is None else str(attributes.get(field))
+        for field in tag_fields(tag_type)
+    }
+    for attdef in block.query("ATTDEF"):
+        tag = attdef.dxf.tag
+        if tag not in existing:
+            block_reference.add_attrib(tag, values.get(tag, ""), insert=attdef.dxf.insert)
+    for attribute in block_reference.attribs:
+        if attribute.dxf.tag in values:
+            attribute.dxf.text = values[attribute.dxf.tag]
+    return block_reference
+
+
 def insert_block_reference(
     document: Any,
     tag_type: str,

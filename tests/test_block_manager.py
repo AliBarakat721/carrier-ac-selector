@@ -4,8 +4,10 @@ import pytest
 from cad.block_manager import (
     create_block_definition,
     insert_block_reference,
+    synchronize_attributes,
     validate_block_definition,
 )
+from cad.tag_config import tag_fields
 
 
 def indoor_attributes(entity_id="INDOOR-0001", tag_id="IDU-01", model="42QSS"):
@@ -92,3 +94,21 @@ def test_duplicate_entity_id_is_rejected():
         insert_block_reference(
             drawing, "indoor_unit", (1, 1), indoor_attributes(), existing_entity_ids=ids
         )
+
+
+def test_legacy_block_reference_receives_missing_attributes():
+    drawing = ezdxf.new("R2018")
+    block = drawing.blocks.new("HVAC_INDOOR_UNIT")
+    for field in ("ENTITY_ID", "TAG_ID"):
+        attdef = block.add_attdef(field, insert=(0, 0))
+        attdef.dxf.text = field
+    reference = drawing.modelspace().add_blockref("HVAC_INDOOR_UNIT", (3, 4))
+    reference.add_attrib("ENTITY_ID", "INDOOR-LEGACY", insert=(0, 0))
+    reference.add_attrib("TAG_ID", "IDU-LEGACY", insert=(0, 0))
+
+    create_block_definition(drawing, "indoor_unit")
+    synchronize_attributes(reference, "indoor_unit", indoor_attributes("INDOOR-LEGACY", "IDU-LEGACY"))
+
+    tags = {attribute.dxf.tag for attribute in reference.attribs}
+    assert set(tag_fields("indoor_unit")) == tags
+    assert tuple(reference.dxf.insert)[:2] == (3.0, 4.0)

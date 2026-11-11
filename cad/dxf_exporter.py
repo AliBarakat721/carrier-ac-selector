@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,7 +11,7 @@ from typing import Iterable, Mapping
 
 import ezdxf
 
-from .block_manager import insert_block_reference, populate_attributes
+from .block_manager import insert_block_reference, populate_attributes, synchronize_attributes
 from .layer_manager import ensure_hvac_layers, validate_hvac_layers
 from .schedule_builder import build_equipment_schedule, export_schedule_data
 from .tag_config import TAG_CONFIG, tag_block_name, validate_unique_entity_ids
@@ -65,13 +66,7 @@ def _update_or_insert(
     if existing is not None:
         if position is not None:
             existing.dxf.insert = position
-        values = {
-            field: "" if attributes.get(field) is None else str(attributes.get(field))
-            for field in TAG_CONFIG[tag_type]["fields"]
-        }
-        for attribute in existing.attribs:
-            if attribute.dxf.tag in values:
-                attribute.dxf.text = values[attribute.dxf.tag]
+        synchronize_attributes(existing, tag_type, attributes)
         return existing
     if position is None:
         raise ValueError(f"POSITION is required for new ENTITY_ID: {entity_id}")
@@ -85,18 +80,17 @@ def _update_or_insert(
 
 
 def _room_attributes(room: object) -> dict[str, object]:
-    polygon = room.polygon
-    centroid = polygon.centroid
+    unit_status = getattr(room, "unit_status", "VERIFIED")
     return {
         "ENTITY_ID": f"ROOM-{room.room_id}",
         "ROOM_ID": room.room_id,
         "ROOM_NAME": room.label or "",
-        "AREA_M2": room.area,
+        "AREA_M2": room.area if unit_status == "VERIFIED" else None,
         "PERIMETER_M": room.perimeter,
         "DETECTION_STATUS": room.status,
         "ROOM_SOURCE": room.source,
         "GEOMETRY_VERIFICATION": room.status,
-        "AREA_SOURCE": "CAD",
+        "AREA_SOURCE": "CAD" if unit_status == "VERIFIED" else "UNIT_UNKNOWN",
     }
 
 
@@ -185,6 +179,8 @@ def export_hvac_dxf(
     ) as handle:
         temporary_dxf = Path(handle.name)
     temporary_schedule: Path | None = None
+    backup_dxf: Path | None = None
+    backup_schedule: Path | None = None
     try:
         if schedule_destination:
             schedule_destination.parent.mkdir(parents=True, exist_ok=True)
@@ -200,13 +196,34 @@ def export_hvac_dxf(
         post_save_errors = reopen_and_verify(temporary_dxf)
         if post_save_errors:
             raise ValueError("DXF round-trip validation failed: " + "; ".join(post_save_errors))
-        os.replace(temporary_dxf, destination)
-        if schedule_destination and temporary_schedule:
-            os.replace(temporary_schedule, schedule_destination)
+        if destination.exists():
+            backup_dxf = destination.with_name(f".{destination.name}.backup")
+            shutil.copy2(destination, backup_dxf)
+        if schedule_destination and schedule_destination.exists():
+            backup_schedule = schedule_destination.with_name(f".{schedule_destination.name}.backup")
+            shutil.copy2(schedule_destination, backup_schedule)
+        try:
+            os.replace(temporary_dxf, destination)
+            if schedule_destination and temporary_schedule:
+                os.replace(temporary_schedule, schedule_destination)
+        except Exception:
+            if backup_dxf and backup_dxf.exists():
+                os.replace(backup_dxf, destination)
+            elif destination.exists():
+                destination.unlink()
+            if backup_schedule and backup_schedule.exists():
+                os.replace(backup_schedule, schedule_destination)
+            elif schedule_destination and schedule_destination.exists():
+                schedule_destination.unlink()
+            raise
     finally:
         temporary_dxf.unlink(missing_ok=True)
         if temporary_schedule:
             temporary_schedule.unlink(missing_ok=True)
+        if backup_dxf:
+            backup_dxf.unlink(missing_ok=True)
+        if backup_schedule:
+            backup_schedule.unlink(missing_ok=True)
 
     return ExportResult(
         output_path=destination,

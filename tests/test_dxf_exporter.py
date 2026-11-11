@@ -118,11 +118,10 @@ def test_reexport_without_position_preserves_existing_location(tmp_path):
     source = tmp_path / "source.dxf"
     output = tmp_path / "hvac-output.dxf"
     make_source(source)
-    original = indoor()
     export_hvac_dxf(
         source,
         output,
-        indoor_units=[original],
+        indoor_units=[indoor()],
         outdoor_units=[outdoor()],
         relationships=[],
     )
@@ -142,3 +141,38 @@ def test_reexport_without_position_preserves_existing_location(tmp_path):
         if any(attr.dxf.tag == "ENTITY_ID" and attr.dxf.text == "INDOOR-001" for attr in ref.attribs)
     )
     assert tuple(indoor_ref.dxf.insert)[:2] == (2.0, 2.0)
+
+
+def test_export_rolls_back_when_second_output_replace_fails(tmp_path, monkeypatch):
+    source = tmp_path / "source.dxf"
+    output = tmp_path / "hvac-output.dxf"
+    schedule = tmp_path / "equipment.csv"
+    make_source(source)
+    import cad.dxf_exporter as exporter
+
+    original_replace = exporter.os.replace
+    calls = {"count": 0}
+
+    def fail_second_replace(src, dst):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise OSError("injected schedule replacement failure")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(exporter.os, "replace", fail_second_replace)
+    try:
+        export_hvac_dxf(
+            source,
+            output,
+            indoor_units=[indoor()],
+            outdoor_units=[outdoor()],
+            relationships=[],
+            schedule_path=schedule,
+        )
+    except OSError:
+        pass
+    else:
+        raise AssertionError("fault injection should fail export")
+
+    assert not output.exists()
+    assert not schedule.exists()

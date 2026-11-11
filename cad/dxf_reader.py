@@ -51,10 +51,16 @@ _UNIT_SCALE_TO_METERS = {
     8: 0.0000000254,
     9: 0.0000254,
     10: 0.9144,
+    11: 1e-10,
+    12: 1e-9,
+    13: 1e-6,
     14: 10.0,
     15: 10.0,
     16: 100.0,
     17: 1_000_000_000.0,
+    18: 149_597_870_700.0,
+    19: 9_460_730_472_580_800.0,
+    20: 3.085_677_581_491_367e16,
 }
 
 
@@ -83,6 +89,10 @@ class CadDocument:
         return _UNIT_SCALE_TO_METERS.get(self.unit_code)
 
     @property
+    def units_verified(self) -> bool:
+        return self.unit_scale_to_meters is not None
+
+    @property
     def entity_count(self) -> int:
         return len(self.entities)
 
@@ -100,8 +110,10 @@ def _entity_data(entity: DXFGraphic) -> dict[str, Any]:
     if kind == "LINE":
         return {"start": _point(entity.dxf.start), "end": _point(entity.dxf.end)}
     if kind == "LWPOLYLINE":
+        points = list(entity.get_points("xyseb"))
         return {
-            "points": [(float(x), float(y)) for x, y, *_ in entity.get_points("xyseb")],
+            "points": [(float(point[0]), float(point[1])) for point in points],
+            "bulges": [float(point[4]) for point in points],
             "closed": bool(entity.closed),
         }
     if kind == "POLYLINE":

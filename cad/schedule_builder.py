@@ -139,6 +139,28 @@ def build_equipment_schedule(
             })
     warnings = validate_schedule_data(indoor, outdoor, links)
     resolved = resolve_system_relationships(links)
+    indoor_ids = {str(row.get("ENTITY_ID", "")).strip() for row in indoor}
+    outdoor_ids = {str(row.get("ENTITY_ID", "")).strip() for row in outdoor}
+    warning_entities: set[str] = set()
+    memberships: dict[str, set[str]] = defaultdict(set)
+    for link in links:
+        entity_id = str(link.get("ENTITY_ID", "")).strip()
+        system_id = str(link.get("SYSTEM_ID", "")).strip()
+        role = str(link.get("ROLE", "")).strip().upper()
+        actual_type = "INDOOR" if entity_id in indoor_ids else "OUTDOOR" if entity_id in outdoor_ids else "UNKNOWN"
+        if not system_id or entity_id not in indoor_ids | outdoor_ids or role != actual_type:
+            warning_entities.add(entity_id)
+        memberships[entity_id].add(system_id)
+    warning_entities.update(entity_id for entity_id, systems in memberships.items() if len(systems - {""}) > 1)
+    explicit_by_entity = {
+        str(link.get("ENTITY_ID", "")).strip(): str(link.get("SYSTEM_ID", "")).strip()
+        for link in links
+    }
+    for row in indoor + outdoor:
+        entity_id = str(row.get("ENTITY_ID", "")).strip()
+        source_system = str(row.get("SYSTEM_ID", "")).strip()
+        if source_system and explicit_by_entity.get(entity_id) not in {None, "", source_system}:
+            warning_entities.add(entity_id)
     outdoor_by_id = {
         str(row.get("ENTITY_ID")): row for row in outdoor if row.get("ENTITY_ID") is not None
     }
@@ -163,7 +185,7 @@ def build_equipment_schedule(
         ]
         row["SYSTEM_ID"] = system_id
         row["ODU_TAGS"] = ", ".join(outdoor_tags)
-        row["RELATIONSHIP_STATUS"] = "OK" if outdoor_tags and not warnings else "NEEDS_REVIEW"
+        row["RELATIONSHIP_STATUS"] = "OK" if outdoor_tags and entity_id not in warning_entities else "NEEDS_REVIEW"
         rows.append({column: row.get(column) for column in SCHEDULE_COLUMNS})
 
     return pd.DataFrame(rows, columns=SCHEDULE_COLUMNS)

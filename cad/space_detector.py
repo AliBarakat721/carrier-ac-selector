@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +25,7 @@ class RoomSpace:
     label: str | None = None
     status: str = "NEEDS_REVIEW"
     boundary_handles: tuple[str, ...] = ()
+    unit_status: str = "VERIFIED"
 
 
 def _scaled_metrics(polygon: Polygon, scale: float | None) -> tuple[float, float]:
@@ -32,14 +34,51 @@ def _scaled_metrics(polygon: Polygon, scale: float | None) -> tuple[float, float
     return float(polygon.area * scale * scale), float(polygon.length * scale)
 
 
-def _closed_polyline_spaces(document: CadDocument) -> list[RoomSpace]:
+def _bulged_points(points: list[tuple[float, float]], bulges: list[float], closed: bool, tolerance: float) -> list[tuple[float, float]]:
+    """Approximate LWPOLYLINE bulge arcs with a documented angular tolerance."""
+
+    if not any(abs(value) > 1e-12 for value in bulges):
+        return points
+    result: list[tuple[float, float]] = []
+    count = len(points) if closed else max(0, len(points) - 1)
+    for index in range(count):
+        start = points[index]
+        end = points[(index + 1) % len(points)]
+        result.append(start)
+        bulge = bulges[index] if index < len(bulges) else 0.0
+        if abs(bulge) <= 1e-12:
+            continue
+        dx, dy = end[0] - start[0], end[1] - start[1]
+        chord = math.hypot(dx, dy)
+        theta = 4.0 * math.atan(bulge)
+        if chord == 0 or abs(theta) < 1e-12:
+            continue
+        radius = chord / (2.0 * math.sin(abs(theta) / 2.0))
+        midpoint = ((start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0)
+        offset = math.sqrt(max(0.0, radius * radius - (chord / 2.0) ** 2))
+        normal = (-dy / chord, dx / chord)
+        sign = 1.0 if bulge > 0 else -1.0
+        center = (midpoint[0] + sign * normal[0] * offset, midpoint[1] + sign * normal[1] * offset)
+        start_angle = math.atan2(start[1] - center[1], start[0] - center[0])
+        segments = max(2, int(math.ceil(abs(theta) / max(tolerance, math.radians(5.0)))))
+        for step in range(1, segments):
+            angle = start_angle + theta * step / segments
+            result.append((center[0] + radius * math.cos(angle), center[1] + radius * math.sin(angle)))
+    if not closed and points:
+        result.append(points[-1])
+    return result
+
+
+def _closed_polyline_spaces(document: CadDocument, tolerance: float) -> list[RoomSpace]:
     rooms: list[RoomSpace] = []
     index = 1
     scale = document.unit_scale_to_meters
     for entity in document.entities_of_type("LWPOLYLINE", "POLYLINE"):
         if not entity.data.get("closed"):
             continue
-        points = entity.data.get("points", [])
+        points = _bulged_points(
+            entity.data.get("points", []), entity.data.get("bulges", []), True, tolerance
+        )
         if len(points) < 3:
             continue
         polygon = Polygon(points)
@@ -59,13 +98,14 @@ def _closed_polyline_spaces(document: CadDocument) -> list[RoomSpace]:
                 source="closed_polyline",
                 layer=entity.layer,
                 boundary_handles=(entity.handle,) if entity.handle else (),
+                unit_status="VERIFIED" if scale is not None else "UNIT_UNKNOWN",
             )
         )
         index += 1
     return rooms
 
 
-def _line_polygon_spaces(document: CadDocument, starting_index: int) -> list[RoomSpace]:
+def _line_polygon_spaces(document: CadDocument, starting_index: int, tolerance: float) -> list[RoomSpace]:
     lines: list[LineString] = []
     line_records: list[tuple[LineString, str | None]] = []
     for entity in document.entities_of_type("LINE"):
@@ -87,7 +127,7 @@ def _line_polygon_spaces(document: CadDocument, starting_index: int) -> list[Roo
         handles = tuple(
             handle
             for line, handle in line_records
-            if handle and line.distance(polygon.boundary) <= 1e-9
+            if handle and line.distance(polygon.boundary) <= tolerance
         )
         area, perimeter = _scaled_metrics(polygon, scale)
         rooms.append(
@@ -99,6 +139,7 @@ def _line_polygon_spaces(document: CadDocument, starting_index: int) -> list[Roo
                 source="wall_lines",
                 status="NEEDS_REVIEW",
                 boundary_handles=handles,
+                unit_status="VERIFIED" if scale is not None else "UNIT_UNKNOWN",
             )
         )
     return rooms
@@ -134,6 +175,7 @@ def detect_spaces(
     document_or_path: CadDocument | str | Path,
     *,
     include_wall_lines: bool = True,
+    tolerance: float = 1e-6,
 ) -> list[RoomSpace]:
     """Detect candidate rooms and remove near-identical geometric duplicates."""
 
@@ -142,7 +184,9 @@ def detect_spaces(
         if isinstance(document_or_path, CadDocument)
         else read_dxf(document_or_path)
     )
-    rooms = _closed_polyline_spaces(document)
+    if tolerance <= 0:
+        raise ValueError("Geometry tolerance must be positive")
+    rooms = _closed_polyline_spaces(document, tolerance)
     if include_wall_lines:
-        rooms.extend(_line_polygon_spaces(document, len(rooms) + 1))
+        rooms.extend(_line_polygon_spaces(document, len(rooms) + 1, tolerance))
     return _deduplicate_spaces(rooms)

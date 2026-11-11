@@ -82,6 +82,35 @@ def test_millimeter_units_are_converted_to_square_meters(tmp_path):
     assert round(rooms[0].perimeter, 3) == 18.0
 
 
+def test_unitless_geometry_is_marked_unknown(tmp_path):
+    source = tmp_path / "unitless.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 0
+    drawing.modelspace().add_lwpolyline([(0, 0), (5, 0), (5, 4), (0, 4)], close=True)
+    drawing.saveas(source)
+
+    rooms = detect_spaces(source, include_wall_lines=False)
+
+    assert rooms[0].unit_status == "UNIT_UNKNOWN"
+
+
+def test_bulge_is_preserved_and_curved_boundary_is_not_flattened(tmp_path):
+    source = tmp_path / "bulge.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    drawing.modelspace().add_lwpolyline(
+        [(0, 0, 0, 0, 1.0), (10, 0), (10, 10), (0, 10)], close=True
+    )
+    drawing.saveas(source)
+
+    document = read_dxf(source)
+    rooms = detect_spaces(document, include_wall_lines=False)
+
+    assert document.entities_of_type("LWPOLYLINE")[0].data["bulges"][0] == 1.0
+    assert len(rooms) == 1
+    assert rooms[0].area != 100.0
+
+
 def test_missing_dxf_is_reported():
     with pytest.raises(FileNotFoundError):
         read_dxf("does-not-exist.dxf")

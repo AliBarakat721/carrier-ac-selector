@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
-
+import ezdxf
 from ezdxf.addons import odafc
 
 from .dxf_reader import CadDocument, read_dxf
@@ -20,15 +20,17 @@ class DwgImportError(RuntimeError):
     """Raised when a DWG file cannot be converted into a readable DXF."""
 
 
-def _configure_converter() -> None:
-    """Allow an explicit ODA executable path without changing global config files."""
+def _configure_converter() -> str | None:
+    """Configure ezdxf to use an explicit ODA executable path for this process."""
     executable = os.environ.get("ODA_FILE_CONVERTER", "").strip()
     if not executable:
-        return
+        return None
+    executable = str(Path(executable).expanduser().resolve())
     if os.name == "nt":
-        odafc.win_exec_path = executable
+        ezdxf.options.set("odafc-addon", "win_exec_path", executable)
     else:
-        odafc.unix_exec_path = executable
+        ezdxf.options.set("odafc-addon", "unix_exec_path", executable)
+    return executable
 
 
 def read_cad_file(path: str | Path) -> CadDocument:
@@ -46,8 +48,20 @@ def read_cad_file(path: str | Path) -> CadDocument:
             "Choose a DWG or DXF file."
         )
 
-    _configure_converter()
+    configured_converter = _configure_converter()
     try:
+        if configured_converter:
+            converter_path = Path(configured_converter)
+            if not converter_path.is_file():
+                raise DwgImportError(
+                    f"ODA_FILE_CONVERTER points to a file that does not exist: "
+                    f"{configured_converter}"
+                )
+            if os.name != "nt" and not os.access(converter_path, os.X_OK):
+                raise DwgImportError(
+                    f"ODA_FILE_CONVERTER is not executable: {configured_converter}. "
+                    f"Run chmod +x on the AppImage and try again."
+                )
         if not odafc.is_installed():
             raise DwgImportError(
                 "DWG import requires ODA File Converter. Install it from "

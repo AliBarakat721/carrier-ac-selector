@@ -134,6 +134,8 @@ def capacity_margin_pct(selected_capacity_kw: float | None, load_kw: float | Non
 
     if selected_capacity_kw is None or load_kw is None:
         return None
+    if any(isinstance(value, (bool, str)) for value in (selected_capacity_kw, load_kw)):
+        raise ValueError("Capacity and load must be numeric")
     try:
         selected = float(selected_capacity_kw)
         load = float(load_kw)
@@ -183,7 +185,13 @@ def pipe_check_status(
 def validate_unique_entity_ids(entity_ids: list[str]) -> None:
     """Reject missing or duplicate internal identifiers before export."""
 
-    if any(not isinstance(value, str) or not value.strip() for value in entity_ids):
+    if any(
+        not isinstance(value, str)
+        or not value.strip()
+        or value.strip().lower() == "none"
+        for value in entity_ids
+    ):
         raise ValueError("ENTITY_ID values must be non-empty strings")
-    if len(entity_ids) != len(set(entity_ids)):
+    normalized = [value.strip().casefold() for value in entity_ids]
+    if len(normalized) != len(set(normalized)):
         raise ValueError("Duplicate ENTITY_ID values are not allowed")

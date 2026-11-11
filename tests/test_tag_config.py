@@ -59,6 +59,8 @@ def test_capacity_margin_rejects_invalid_numeric_values():
         capacity_margin_pct(5.0, float("nan"))
     with pytest.raises(ValueError):
         capacity_margin_pct("not-a-number", 5.0)
+    with pytest.raises(ValueError):
+        capacity_margin_pct("5.5", 5.0)
 
 
 def test_pipe_limits_do_not_claim_ok_when_manufacturer_limits_are_unknown():
@@ -76,6 +78,8 @@ def test_entity_ids_must_be_unique_and_non_empty():
         validate_unique_entity_ids(["ID-1", "ID-1"])
     with pytest.raises(ValueError):
         validate_unique_entity_ids(["ID-1", ""])
+    with pytest.raises(ValueError):
+        validate_unique_entity_ids(["ID-1", " id-1 "])
 
 
 def test_unknown_tag_type_is_rejected():

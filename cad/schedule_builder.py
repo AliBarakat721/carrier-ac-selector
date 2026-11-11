@@ -73,6 +73,17 @@ def validate_schedule_data(
             warnings.append(f"RELATIONSHIP_UNKNOWN_ENTITY:{entity_id}")
         if role not in {"INDOOR", "OUTDOOR"}:
             warnings.append(f"RELATIONSHIP_INVALID_ROLE:{role}")
+    explicit_by_entity = {
+        str(link.get("ENTITY_ID", "")).strip(): str(link.get("SYSTEM_ID", "")).strip()
+        for link in links
+        if str(link.get("ENTITY_ID", "")).strip()
+    }
+    for row in indoor + outdoor:
+        entity_id = str(row.get("ENTITY_ID", "")).strip()
+        source_system = str(row.get("SYSTEM_ID", "")).strip()
+        explicit_system = explicit_by_entity.get(entity_id)
+        if source_system and explicit_system and source_system != explicit_system:
+            warnings.append(f"RELATIONSHIP_SYSTEM_CONFLICT:{entity_id}")
     return sorted(set(warnings))
 
 
@@ -116,6 +127,16 @@ def build_equipment_schedule(
     indoor = _dedupe_exact_records(_records(indoor_equipment))
     outdoor = _dedupe_exact_records(_records(outdoor_equipment))
     links = _records(relationships)
+    linked_entities = {str(link.get("ENTITY_ID", "")).strip() for link in links}
+    for row in indoor + outdoor:
+        entity_id = str(row.get("ENTITY_ID", "")).strip()
+        system_id = str(row.get("SYSTEM_ID", "")).strip()
+        if entity_id and system_id and entity_id not in linked_entities:
+            links.append({
+                "SYSTEM_ID": system_id,
+                "ENTITY_ID": entity_id,
+                "ROLE": "INDOOR" if row in indoor else "OUTDOOR",
+            })
     warnings = validate_schedule_data(indoor, outdoor, links)
     resolved = resolve_system_relationships(links)
     outdoor_by_id = {
@@ -142,11 +163,7 @@ def build_equipment_schedule(
         ]
         row["SYSTEM_ID"] = system_id
         row["ODU_TAGS"] = ", ".join(outdoor_tags)
-        row["RELATIONSHIP_STATUS"] = (
-            "OK" if outdoor_tags else "NEEDS_REVIEW"
-        )
-        if warnings and not row["RELATIONSHIP_STATUS"] == "OK":
-            row["RELATIONSHIP_STATUS"] = "NEEDS_REVIEW"
+        row["RELATIONSHIP_STATUS"] = "OK" if outdoor_tags and not warnings else "NEEDS_REVIEW"
         rows.append({column: row.get(column) for column in SCHEDULE_COLUMNS})
 
     return pd.DataFrame(rows, columns=SCHEDULE_COLUMNS)

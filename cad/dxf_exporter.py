@@ -56,14 +56,15 @@ def _existing_references(document: object, tag_type: str) -> dict[str, object]:
 def _update_or_insert(
     document: object,
     tag_type: str,
-    position: tuple[float, float],
+    position: tuple[float, float] | None,
     attributes: Mapping[str, object],
     existing_ids: set[str],
 ) -> object:
     entity_id = str(attributes["ENTITY_ID"]).strip()
     existing = _existing_references(document, tag_type).get(entity_id)
     if existing is not None:
-        existing.dxf.insert = position
+        if position is not None:
+            existing.dxf.insert = position
         values = {
             field: "" if attributes.get(field) is None else str(attributes.get(field))
             for field in TAG_CONFIG[tag_type]["fields"]
@@ -72,6 +73,8 @@ def _update_or_insert(
             if attribute.dxf.tag in values:
                 attribute.dxf.text = values[attribute.dxf.tag]
         return existing
+    if position is None:
+        raise ValueError(f"POSITION is required for new ENTITY_ID: {entity_id}")
     return insert_block_reference(
         document,
         tag_type,
@@ -152,10 +155,12 @@ def export_hvac_dxf(
         existing_ids.update(_existing_references(document, tag_type))
 
     for item in indoor:
-        position = tuple(item.pop("POSITION", (0.0, 0.0)))
+        raw_position = item.pop("POSITION", None)
+        position = tuple(raw_position) if raw_position is not None else None
         _update_or_insert(document, "indoor_unit", position, item, existing_ids)
     for item in outdoor:
-        position = tuple(item.pop("POSITION", (0.0, 0.0)))
+        raw_position = item.pop("POSITION", None)
+        position = tuple(raw_position) if raw_position is not None else None
         _update_or_insert(document, "outdoor_unit", position, item, existing_ids)
     for room in room_list:
         centroid = room.polygon.centroid
@@ -179,16 +184,29 @@ def export_hvac_dxf(
         prefix=f".{destination.stem}-", suffix=".dxf", dir=destination.parent, delete=False
     ) as handle:
         temporary_dxf = Path(handle.name)
+    temporary_schedule: Path | None = None
     try:
+        if schedule_destination:
+            schedule_destination.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                prefix=f".{schedule_destination.stem}-",
+                suffix=schedule_destination.suffix,
+                dir=schedule_destination.parent,
+                delete=False,
+            ) as handle:
+                temporary_schedule = Path(handle.name)
+            export_schedule_data(schedule, temporary_schedule)
         document.saveas(temporary_dxf)
         post_save_errors = reopen_and_verify(temporary_dxf)
         if post_save_errors:
             raise ValueError("DXF round-trip validation failed: " + "; ".join(post_save_errors))
         os.replace(temporary_dxf, destination)
-        if schedule_destination:
-            export_schedule_data(schedule, schedule_destination)
+        if schedule_destination and temporary_schedule:
+            os.replace(temporary_schedule, schedule_destination)
     finally:
         temporary_dxf.unlink(missing_ok=True)
+        if temporary_schedule:
+            temporary_schedule.unlink(missing_ok=True)
 
     return ExportResult(
         output_path=destination,

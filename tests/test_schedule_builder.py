@@ -75,6 +75,28 @@ def test_relationship_resolver_supports_many_to_one_and_many_to_many():
     assert resolved["SYS-01"]["outdoor"] == ["OUTDOOR-001", "OUTDOOR-002"]
 
 
+def test_system_ids_are_inferred_when_relationship_table_is_empty():
+    outdoor = dict(OUTDOOR[0])
+    outdoor["SYSTEM_ID"] = "SYS-01"
+    schedule = build_equipment_schedule(INDOOR[:1], [outdoor], [])
+
+    assert schedule.iloc[0]["ODU_TAGS"] == "ODU-01"
+    assert schedule.iloc[0]["RELATIONSHIP_STATUS"] == "OK"
+
+
+def test_conflicting_explicit_system_relationship_requires_review():
+    schedule = build_equipment_schedule(
+        INDOOR[:1],
+        OUTDOOR[:1],
+        [
+            {"SYSTEM_ID": "SYS-OTHER", "ENTITY_ID": "INDOOR-001", "ROLE": "INDOOR"},
+            {"SYSTEM_ID": "SYS-01", "ENTITY_ID": "OUTDOOR-001", "ROLE": "OUTDOOR"},
+        ],
+    )
+
+    assert schedule.iloc[0]["RELATIONSHIP_STATUS"] == "NEEDS_REVIEW"
+
+
 def test_invalid_relationship_is_warning_not_crash():
     warnings = validate_schedule_data(
         INDOOR,

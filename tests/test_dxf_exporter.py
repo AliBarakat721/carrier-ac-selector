@@ -112,3 +112,33 @@ def test_repeated_export_updates_existing_entities_without_duplicates(tmp_path):
     assert len(references) == 2
     assert sum(1 for ref in references for attr in ref.attribs if attr.dxf.tag == "ENTITY_ID") == 2
     assert reopen_and_verify(output) == []
+
+
+def test_reexport_without_position_preserves_existing_location(tmp_path):
+    source = tmp_path / "source.dxf"
+    output = tmp_path / "hvac-output.dxf"
+    make_source(source)
+    original = indoor()
+    export_hvac_dxf(
+        source,
+        output,
+        indoor_units=[original],
+        outdoor_units=[outdoor()],
+        relationships=[],
+    )
+    updated = indoor()
+    del updated["POSITION"]
+    export_hvac_dxf(
+        output,
+        output,
+        indoor_units=[updated],
+        outdoor_units=[outdoor()],
+        relationships=[],
+    )
+
+    exported = ezdxf.readfile(output)
+    indoor_ref = next(
+        ref for ref in exported.modelspace().query("INSERT")
+        if any(attr.dxf.tag == "ENTITY_ID" and attr.dxf.text == "INDOOR-001" for attr in ref.attribs)
+    )
+    assert tuple(indoor_ref.dxf.insert)[:2] == (2.0, 2.0)

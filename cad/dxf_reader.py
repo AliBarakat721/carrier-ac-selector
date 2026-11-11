@@ -19,6 +19,7 @@ _UNITS = {
     0: "unitless",
     1: "inches",
     2: "feet",
+    3: "miles",
     4: "millimeters",
     5: "centimeters",
     6: "meters",
@@ -36,6 +37,24 @@ _UNITS = {
     18: "astronomical_units",
     19: "light_years",
     20: "parsecs",
+}
+
+_UNIT_SCALE_TO_METERS = {
+    0: None,
+    1: 0.0254,
+    2: 0.3048,
+    3: 1609.344,
+    4: 0.001,
+    5: 0.01,
+    6: 1.0,
+    7: 1000.0,
+    8: 0.0000000254,
+    9: 0.0000254,
+    10: 0.9144,
+    14: 10.0,
+    15: 10.0,
+    16: 100.0,
+    17: 1_000_000_000.0,
 }
 
 
@@ -58,6 +77,10 @@ class CadDocument:
     unit_code: int
     layers: list[str]
     entities: list[CadEntity]
+
+    @property
+    def unit_scale_to_meters(self) -> float | None:
+        return _UNIT_SCALE_TO_METERS.get(self.unit_code)
 
     @property
     def entity_count(self) -> int:

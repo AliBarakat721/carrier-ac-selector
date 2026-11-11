@@ -50,7 +50,19 @@ def create_block_definition(document: Any, tag_type: str) -> Any:
     _validate_tag_type(tag_type)
     name = tag_block_name(tag_type)
     if name in document.blocks:
-        return document.blocks[name]
+        block = document.blocks[name]
+        actual = {entity.dxf.tag for entity in block.query("ATTDEF")}
+        for index, field in enumerate(tag_fields(tag_type)):
+            if field in actual:
+                continue
+            attdef = block.add_attdef(
+                tag=field,
+                insert=(0.7, 0.3 - index * 0.18),
+                dxfattribs={"height": 0.12, "layer": TAG_CONFIG[tag_type]["layer"]},
+            )
+            attdef.dxf.text = field
+            attdef.dxf.prompt = field
+        return block
 
     block = document.blocks.new(name=name, base_point=(0, 0))
     _add_symbol_geometry(block, tag_type)

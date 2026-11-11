@@ -51,6 +51,37 @@ def test_detect_spaces_from_closed_polyline_and_wall_lines(tmp_path):
     assert all(room.boundary_handles for room in rooms)
 
 
+def test_duplicate_polyline_and_wall_boundary_are_deduplicated(tmp_path):
+    source = tmp_path / "duplicate.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    modelspace = drawing.modelspace()
+    modelspace.add_lwpolyline([(0, 0), (5, 0), (5, 4), (0, 4)], close=True)
+    for start, end in [((0, 0), (5, 0)), ((5, 0), (5, 4)), ((5, 4), (0, 4)), ((0, 4), (0, 0))]:
+        modelspace.add_line(start, end)
+    drawing.saveas(source)
+
+    rooms = detect_spaces(source)
+
+    assert len(rooms) == 1
+    assert rooms[0].source == "closed_polyline"
+    assert len(rooms[0].boundary_handles) == 5
+
+
+def test_millimeter_units_are_converted_to_square_meters(tmp_path):
+    source = tmp_path / "millimeters.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 4
+    drawing.modelspace().add_lwpolyline([(0, 0), (5000, 0), (5000, 4000), (0, 4000)], close=True)
+    drawing.saveas(source)
+
+    rooms = detect_spaces(source, include_wall_lines=False)
+
+    assert len(rooms) == 1
+    assert round(rooms[0].area, 3) == 20.0
+    assert round(rooms[0].perimeter, 3) == 18.0
+
+
 def test_missing_dxf_is_reported():
     with pytest.raises(FileNotFoundError):
         read_dxf("does-not-exist.dxf")

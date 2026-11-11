@@ -8,6 +8,7 @@ from pathlib import Path
 
 from shapely.geometry import LineString, Polygon
 from shapely.ops import polygonize, unary_union
+from shapely.validation import explain_validity
 
 from .dxf_reader import CadDocument, read_dxf
 
@@ -89,7 +90,6 @@ def _closed_polyline_spaces(document: CadDocument, arc_angle_tolerance: float) -
             continue
         if polygon.is_valid and polygon.area <= 0:
             continue
-        from shapely.validation import explain_validity
         geometry_status = "NEEDS_REVIEW" if polygon.is_valid else "INVALID_GEOMETRY"
         diagnostic = None if polygon.is_valid else explain_validity(polygon)
         raw_area = float(polygon.area)
@@ -129,6 +129,14 @@ def _snap_line_endpoints(lines: list[tuple[tuple[float, float], tuple[float, flo
         for point, target in snapped.items()
         if point != target
     ]
+    if gap_tolerance > 0:
+        for index, point in enumerate(endpoints):
+            nearest = min(
+                (math.hypot(point[0] - other[0], point[1] - other[1]) for j, other in enumerate(endpoints) if j != index),
+                default=None,
+            )
+            if nearest is not None and gap_tolerance < nearest <= gap_tolerance * 10:
+                diagnostics.append({"type": "unresolved_gap", "endpoint": point, "distance": nearest})
     return [(snapped[start], snapped[end], handle) for start, end, handle in lines], diagnostics
 
 
@@ -143,6 +151,8 @@ def _line_polygon_spaces(document: CadDocument, starting_index: int, tolerance: 
             raw_lines.append((start, end, entity.handle))
     snapped_lines, diagnostics = _snap_line_endpoints(raw_lines, gap_tolerance)
     for start, end, handle in snapped_lines:
+            if start == end:
+                continue
             line = LineString([start, end])
             lines.append(line)
             line_records.append((line, handle))
@@ -183,6 +193,8 @@ def _line_polygon_spaces(document: CadDocument, starting_index: int, tolerance: 
 
 
 def _iou(left: Polygon, right: Polygon) -> float:
+    if not left.is_valid or not right.is_valid:
+        return 0.0
     union_area = left.union(right).area
     return left.intersection(right).area / union_area if union_area else 0.0
 
@@ -190,8 +202,11 @@ def _iou(left: Polygon, right: Polygon) -> float:
 def _deduplicate_spaces(rooms: list[RoomSpace], threshold: float = 0.98) -> list[RoomSpace]:
     result: list[RoomSpace] = []
     for candidate in rooms:
+        if not candidate.polygon.is_valid:
+            result.append(candidate)
+            continue
         duplicate = next(
-            (item for item in result if _iou(item.polygon, candidate.polygon) >= threshold),
+            (item for item in result if item.polygon.is_valid and _iou(item.polygon, candidate.polygon) >= threshold),
             None,
         )
         if duplicate is None:
@@ -217,7 +232,12 @@ def detect_spaces(
     arc_angle_tolerance: float = math.radians(1.0),
     diagnostics: list[dict[str, object]] | None = None,
 ) -> list[RoomSpace]:
-    """Detect candidate rooms and remove near-identical geometric duplicates."""
+    """Detect candidate rooms.
+
+    ``tolerance`` and ``gap_tolerance`` are in drawing units. Gap snapping is
+    opt-in (default 0.0); door/opening semantics are not inferred automatically.
+    Endpoint-to-line T-junction snapping is not supported yet.
+    """
 
     document = (
         document_or_path

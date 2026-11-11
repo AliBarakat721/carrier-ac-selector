@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Mapping
+import math
 
 from .tag_config import TAG_CONFIG, tag_block_name, tag_fields
 
@@ -115,12 +116,27 @@ def synchronize_attributes(block_reference: Any, tag_type: str, attributes: Mapp
     block = block_reference.doc.blocks[block_reference.dxf.name]
     values = {
         field: "" if attributes.get(field) is None else str(attributes.get(field))
-        for field in tag_fields(tag_type)
+        for field in attributes
+        if field in tag_fields(tag_type)
     }
+    scale_x = float(getattr(block_reference.dxf, "xscale", 1.0))
+    scale_y = float(getattr(block_reference.dxf, "yscale", 1.0))
+    rotation = math.radians(float(getattr(block_reference.dxf, "rotation", 0.0)))
+    cos_r, sin_r = math.cos(rotation), math.sin(rotation)
+    origin = block_reference.dxf.insert
+
+    def wcs_insert(point):
+        x, y = float(point[0]) * scale_x, float(point[1]) * scale_y
+        return (origin.x + x * cos_r - y * sin_r, origin.y + x * sin_r + y * cos_r)
+
     for attdef in block.query("ATTDEF"):
         tag = attdef.dxf.tag
         if tag not in existing:
-            block_reference.add_attrib(tag, values.get(tag, ""), insert=attdef.dxf.insert)
+            dxfattribs = {}
+            for name in ("height", "layer", "color"):
+                if attdef.dxf.hasattr(name):
+                    dxfattribs[name] = attdef.dxf.get(name)
+            block_reference.add_attrib(tag, values.get(tag, ""), insert=wcs_insert(attdef.dxf.insert), dxfattribs=dxfattribs)
     for attribute in block_reference.attribs:
         if hasattr(attribute, "dxf") and attribute.dxf.tag in values:
             attribute.dxf.text = values[attribute.dxf.tag]

@@ -87,10 +87,9 @@ def _room_attributes(room: object) -> dict[str, object]:
     metrics_verified = unit_status == "VERIFIED" and geometry_status != "INVALID_GEOMETRY"
     room_id = str(room.room_id)
     entity_id = room_id if room_id.upper().startswith("ROOM-") else f"ROOM-{room_id}"
-    return {
+    values = {
         "ENTITY_ID": entity_id,
         "ROOM_ID": room.room_id,
-        "ROOM_NAME": room.label or "",
         "AREA_M2": room.area if metrics_verified else None,
         "PERIMETER_M": room.perimeter if metrics_verified else None,
         "DETECTION_STATUS": room.status,
@@ -102,6 +101,9 @@ def _room_attributes(room: object) -> dict[str, object]:
         "DRAWING_UNITS": getattr(room, "drawing_units", "unitless"),
         "UNIT_STATUS": unit_status,
     }
+    if getattr(room, "label", None):
+        values["ROOM_NAME"] = room.label
+    return values
 
 
 def validate_export_document(document: object) -> list[str]:
@@ -217,7 +219,7 @@ def export_hvac_dxf(
             os.replace(temporary_dxf, destination)
             if schedule_destination and temporary_schedule:
                 os.replace(temporary_schedule, schedule_destination)
-        except Exception:
+        except Exception as replace_error:
             rollback_success = False
             try:
                 if backup_dxf and backup_dxf.exists():
@@ -229,10 +231,12 @@ def export_hvac_dxf(
                 elif schedule_destination and schedule_destination.exists():
                     schedule_destination.unlink()
                 rollback_success = True
-            finally:
-                if not rollback_success:
-                    raise
-            raise
+            except Exception as restore_error:
+                backup_paths = ", ".join(str(path) for path in (backup_dxf, backup_schedule) if path)
+                raise RuntimeError(
+                    f"Export rollback failed; recovery backups retained at: {backup_paths}"
+                ) from restore_error
+            raise replace_error
     finally:
         temporary_dxf.unlink(missing_ok=True)
         if temporary_schedule:

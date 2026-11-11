@@ -115,3 +115,26 @@ def test_legacy_block_reference_receives_missing_attributes():
     assert set(tag_fields("indoor_unit")) == tags
     assert sum(attribute.dxf.tag == "TAG_ID" for attribute in live_attributes) == 1
     assert tuple(reference.dxf.insert)[:2] == (3.0, 4.0)
+
+
+def test_legacy_missing_attribs_use_insert_transform_and_partial_updates_preserve_values():
+    drawing = ezdxf.new("R2018")
+    block = drawing.blocks.new("HVAC_INDOOR_UNIT")
+    block.add_attdef("ENTITY_ID", insert=(0, 0))
+    block.add_attdef("TAG_ID", insert=(0, 0))
+    reference = drawing.modelspace().add_blockref("HVAC_INDOOR_UNIT", (100, 200))
+    reference.dxf.xscale = 2.0
+    reference.dxf.yscale = 3.0
+    reference.dxf.rotation = 90.0
+    reference.add_attrib("ENTITY_ID", "INDOOR-TRANSFORMED", insert=(100, 200))
+    reference.add_attrib("TAG_ID", "IDU-TRANSFORMED", insert=(100, 200))
+    create_block_definition(drawing, "indoor_unit")
+    synchronize_attributes(reference, "indoor_unit", indoor_attributes("INDOOR-TRANSFORMED", "IDU-TRANSFORMED"))
+    room_name = next(attribute for attribute in reference.attribs if hasattr(attribute, "dxf") and attribute.dxf.tag == "ROOM_NAME")
+    assert room_name.dxf.insert.x > 90
+    assert room_name.dxf.insert.y > 190
+    room_name.dxf.text = "MANUAL-ROOM-NAME"
+
+    synchronize_attributes(reference, "indoor_unit", {"ENTITY_ID": "INDOOR-TRANSFORMED", "TAG_ID": "IDU-TRANSFORMED"})
+
+    assert next(attribute for attribute in reference.attribs if hasattr(attribute, "dxf") and attribute.dxf.tag == "ROOM_NAME").dxf.text == "MANUAL-ROOM-NAME"

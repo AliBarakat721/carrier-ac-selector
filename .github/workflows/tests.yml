@@ -32,7 +32,7 @@ jobs:
       - name: Verify runtime dependency imports
         run: python -c "import PySide6, pandas, openpyxl, pytesseract, PIL, docx, pymupdf"
       - name: Compile Python modules
-        run: python -m py_compile core.py main.py electrical_engine.py ocr_engine.py roi_tab.py updater.py version.py
+        run: python -m py_compile core.py main.py electrical_engine.py ocr_engine.py roi_tab.py updater.py version.py cad/*.py
       - name: Validate PowerShell updater syntax
         if: runner.os == 'Windows'
         shell: pwsh

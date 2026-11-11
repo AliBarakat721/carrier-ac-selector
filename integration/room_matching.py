@@ -25,9 +25,10 @@ def match_rooms_to_systems(
     Exact normalized matches are accepted only when unique. Explicit mapping
     takes precedence. No system-level load is copied to an individual room.
     """
+    system_list = list(systems)
     explicit = dict(explicit_mapping or {})
     by_name: dict[str, list[str]] = defaultdict(list)
-    for system in systems:
+    for system in system_list:
         key = normalize_name(system.name)
         if key:
             by_name[key].append(system.name)
@@ -41,7 +42,7 @@ def match_rooms_to_systems(
             continue
         chosen = explicit.get(room_id)
         if chosen is not None:
-            known = [item.name for item in systems if item.name == chosen]
+            known = [item.name for item in system_list if item.name == chosen]
             if len(known) == 1:
                 results.append(RoomSystemMatch(room_id, chosen, "MAPPED", "explicit"))
             else:

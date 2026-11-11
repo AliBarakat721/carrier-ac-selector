@@ -34,6 +34,7 @@ from .tag_config import (
     validate_tag_attributes,
     validate_unique_entity_ids,
 )
+from .workflow import RoomAssignment, build_indoor_placements, suggest_room_assignments
 
 __all__ = [
     "CadDocument",
@@ -66,4 +67,7 @@ __all__ = [
     "tag_fields",
     "validate_tag_attributes",
     "validate_unique_entity_ids",
+    "RoomAssignment",
+    "build_indoor_placements",
+    "suggest_room_assignments",
 ]

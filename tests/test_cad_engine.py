@@ -4,6 +4,7 @@ import math
 import ezdxf
 import pytest
 
+import cad.space_detector as space_detector
 from cad.dxf_reader import read_dxf
 from cad.space_detector import _snap_line_endpoints, detect_spaces
 
@@ -37,6 +38,102 @@ def test_read_dxf_extracts_units_layers_and_entities(tmp_path):
     assert document.entity_count == 5
     assert len(document.entities_of_type("LWPOLYLINE")) == 1
     assert len(document.entities_of_type("LINE")) == 4
+
+
+def test_block_room_geometry_is_transformed_and_inherits_insert_layer(tmp_path):
+    source = tmp_path / "inserted-room.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    block = drawing.blocks.new("ROOM_GEOMETRY")
+    block.add_lwpolyline(
+        [(0, 0), (5, 0), (5, 4), (0, 4)],
+        close=True,
+        dxfattribs={"layer": "0"},
+    )
+    insert = drawing.modelspace().add_blockref(
+        "ROOM_GEOMETRY",
+        (10, 20),
+        dxfattribs={"layer": "WALLS", "xscale": 2.0},
+    )
+    drawing.saveas(source)
+
+    document = read_dxf(source)
+    expanded = document.entities_of_type("LWPOLYLINE")
+    rooms = detect_spaces(document, wall_layers={"WALLS"})
+
+    assert len(expanded) == 1
+    assert expanded[0].layer == "WALLS"
+    assert expanded[0].source_insert_handles == (insert.dxf.handle,)
+    assert len(rooms) == 1
+    assert rooms[0].area == pytest.approx(40.0)
+    assert insert.dxf.handle in rooms[0].boundary_handles
+
+
+def test_nested_block_room_geometry_is_expanded_recursively(tmp_path):
+    source = tmp_path / "nested-room.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    geometry = drawing.blocks.new("ROOM_GEOMETRY")
+    geometry.add_lwpolyline([(0, 0), (5, 0), (5, 4), (0, 4)], close=True)
+    outer = drawing.blocks.new("LEVEL_PLAN")
+    outer.add_blockref("ROOM_GEOMETRY", (2, 3))
+    root_insert = drawing.modelspace().add_blockref(
+        "LEVEL_PLAN", (100, 200), dxfattribs={"layer": "WALLS"}
+    )
+    drawing.saveas(source)
+
+    document = read_dxf(source)
+    rooms = detect_spaces(document, wall_layers={"WALLS"})
+
+    assert len(document.entities_of_type("LWPOLYLINE")) == 1
+    assert document.entities_of_type("LWPOLYLINE")[0].layer == "WALLS"
+    assert len(rooms) == 1
+    assert rooms[0].area == pytest.approx(20.0)
+    assert root_insert.dxf.handle in rooms[0].boundary_handles
+
+
+def test_room_is_reconstructed_from_connected_open_lwpolylines(tmp_path):
+    source = tmp_path / "open-polylines.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    modelspace = drawing.modelspace()
+    for start, end in [
+        ((0, 0), (5, 0)),
+        ((5, 0), (5, 4)),
+        ((5, 4), (0, 4)),
+        ((0, 4), (0, 0)),
+    ]:
+        modelspace.add_lwpolyline([start, end], dxfattribs={"layer": "WALLS"})
+    drawing.saveas(source)
+
+    rooms = detect_spaces(source, wall_layers={"WALLS"})
+
+    assert len(rooms) == 1
+    assert rooms[0].source == "wall_lines"
+    assert rooms[0].area == pytest.approx(20.0)
+    assert len(rooms[0].boundary_handles) == 4
+
+
+def test_room_is_reconstructed_from_connected_open_legacy_polylines(tmp_path):
+    source = tmp_path / "open-legacy-polylines.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    modelspace = drawing.modelspace()
+    for start, end in [
+        ((0, 0), (5, 0)),
+        ((5, 0), (5, 4)),
+        ((5, 4), (0, 4)),
+        ((0, 4), (0, 0)),
+    ]:
+        modelspace.add_polyline2d([start, end], dxfattribs={"layer": "WALLS"})
+    drawing.saveas(source)
+
+    rooms = detect_spaces(source, wall_layers={"WALLS"})
+
+    assert len(rooms) == 1
+    assert rooms[0].source == "wall_lines"
+    assert rooms[0].area == pytest.approx(20.0)
+    assert len(rooms[0].boundary_handles) == 4
 
 
 def test_detect_spaces_from_closed_polyline_and_wall_lines(tmp_path):
@@ -333,3 +430,28 @@ def test_room_id_is_stable_when_entity_order_changes(tmp_path):
 def test_missing_dxf_is_reported():
     with pytest.raises(FileNotFoundError):
         read_dxf("does-not-exist.dxf")
+
+
+def test_detect_spaces_uses_unified_importer_for_path_inputs(tmp_path, monkeypatch):
+    source = tmp_path / "office plan.dwg"
+    source.write_bytes(b"mock DWG")
+    dxf = tmp_path / "office plan.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    drawing.modelspace().add_lwpolyline(
+        [(0, 0), (5, 0), (5, 4), (0, 4)], close=True
+    )
+    drawing.saveas(dxf)
+    imported_paths = []
+
+    def fake_read_cad_file(path):
+        imported_paths.append(Path(path))
+        return read_dxf(dxf)
+
+    monkeypatch.setattr(space_detector, "read_cad_file", fake_read_cad_file)
+
+    rooms = detect_spaces(source)
+
+    assert imported_paths == [source]
+    assert len(rooms) == 1
+    assert rooms[0].area == pytest.approx(20.0)

@@ -44,6 +44,28 @@ If the converter is installed in a non-standard location, set the environment va
 
 DWG import is optional: users who only open DXF files do not need ODA File Converter.
 
+#### Fedora 44 / Linux AppImage
+
+On Fedora, choose the current x86_64 **AppImage** from the official ODA download page, save it under `~/Apps`, and make it executable:
+
+```bash
+mkdir -p "$HOME/Apps"
+chmod +x "$HOME/Apps/ODAFileConverter.AppImage"
+```
+
+Rename the downloaded file to `ODAFileConverter.AppImage` first, or replace that example path with its actual filename. If the AppImage reports a FUSE error, install the available FUSE runtime packages with `sudo dnf install fuse fuse-libs`; Fedora installations may already have the required FUSE support. If ODA opens a window or cannot run in a headless session, install Xvfb with `sudo dnf install xorg-x11-server-Xvfb`.
+
+Start Carrier AC Selector from the same terminal session so it inherits the converter path:
+
+```bash
+export ODA_FILE_CONVERTER="$HOME/Apps/ODAFileConverter.AppImage"
+./run.sh
+```
+
+The setting points ezdxf to the AppImage executable. DXF files continue to load without ODA. For a reproducible conversion failure report, keep the complete error text from the CAD Import Error dialog and note whether the AppImage launches by itself.
+
+The DXF reader expands transformed geometry from nested `INSERT` blocks and reads room boundaries from closed polylines as well as linework made from connected lines, arcs, splines, and open polylines. It does not infer door openings or automatically close arbitrary gaps. Treat detected spaces as candidates for review; `$INSUNITS` metadata can be absent or incorrect in the source drawing.
+
 ### Install Tesseract
 
 Ubuntu/Debian:

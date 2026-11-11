@@ -13,7 +13,8 @@ from shapely.ops import polygonize, unary_union
 from shapely.strtree import STRtree
 from shapely.validation import explain_validity
 
-from .dxf_reader import CadDocument, read_dxf
+from .dxf_reader import CadDocument
+from .importer import read_cad_file
 
 
 @dataclass
@@ -114,7 +115,7 @@ def _assign_room_labels(
     label_tolerance: float,
 ) -> None:
     labels = []
-    for entity in document.entities_of_type("TEXT", "MTEXT"):
+    for entity in document.entities_of_type("TEXT", "MTEXT", "ATTRIB"):
         if label_layers is not None and entity.layer.casefold() not in label_layers:
             continue
         text = str(entity.data.get("text", "")).strip()
@@ -369,6 +370,7 @@ def _line_polygon_spaces(
     starting_index: int,
     tolerance: float,
     gap_tolerance: float,
+    arc_angle_tolerance: float,
     wall_layers: set[str] | None = None,
 ) -> tuple[list[RoomSpace], list[dict[str, object]]]:
     lines: list[LineString] = []
@@ -383,8 +385,24 @@ def _line_polygon_spaces(
             end = entity.data.get("end")
             if start and end and start != end:
                 raw_lines.append((start, end, entity.handle))
+        elif kind in {"LWPOLYLINE", "POLYLINE"}:
+            points = _bulged_points(
+                entity.data.get("points", []),
+                entity.data.get("bulges", []),
+                bool(entity.data.get("closed")),
+                arc_angle_tolerance,
+            )
+            if len(points) >= 2:
+                segments = list(zip(points, points[1:]))
+                if entity.data.get("closed") and len(points) >= 3:
+                    segments.append((points[-1], points[0]))
+                raw_lines.extend(
+                    (start, end, entity.handle)
+                    for start, end in segments
+                    if start != end
+                )
         elif kind in {"ARC", "SPLINE"}:
-            points, closed, _ = _curve_points(entity, math.radians(1.0))
+            points, closed, _ = _curve_points(entity, arc_angle_tolerance)
             if not closed:
                 raw_lines.extend((start, end, entity.handle) for start, end in zip(points, points[1:]) if start != end)
     snapped_lines, diagnostics = _snap_line_endpoints(raw_lines, gap_tolerance)
@@ -411,11 +429,11 @@ def _line_polygon_spaces(
     for offset, polygon in enumerate(polygonize(merged), start=starting_index):
         if polygon.is_empty or polygon.area <= 0:
             continue
-        handles = tuple(
+        handles = tuple(dict.fromkeys(
             handle
             for line, handle in line_records
             if handle and line.distance(polygon.boundary) <= tolerance
-        )
+        ))
         area, perimeter = _scaled_metrics(polygon, scale)
         raw_area = float(polygon.area)
         raw_perimeter = float(polygon.length)
@@ -491,14 +509,14 @@ def detect_spaces(
     opt-in (default 0.0); door/opening semantics are not inferred automatically.
     Endpoint-to-line T-junctions are split when the endpoint is within
     ``tolerance`` of a host segment interior. ``wall_layers`` is optional;
-    when supplied, only LINE/ARC/SPLINE entities on those layers participate
-    in wall polygonization.
+    when supplied, only LINE, ARC, SPLINE, and polyline entities on those
+    layers participate in wall polygonization.
     """
 
     document = (
         document_or_path
         if isinstance(document_or_path, CadDocument)
-        else read_dxf(document_or_path)
+        else read_cad_file(document_or_path)
     )
     if tolerance <= 0:
         raise ValueError("Geometry tolerance must be positive")
@@ -523,6 +541,7 @@ def detect_spaces(
             len(rooms) + 1,
             tolerance,
             gap_tolerance,
+            arc_angle_tolerance,
             normalized_wall_layers,
         )
         rooms.extend(line_rooms)

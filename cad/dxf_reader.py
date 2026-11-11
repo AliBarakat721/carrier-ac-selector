@@ -1,15 +1,16 @@
 """DXF reader used by the CAD analysis layer.
 
-The reader intentionally returns a small, serialisable model instead of leaking
- ezdxf entities into the rest of the application.  DWG conversion is kept out
-of this module and will be added as a separate adapter.
+The reader returns a small, serialisable model instead of leaking ezdxf
+entities into the rest of the application. DWG conversion is handled by the
+separate importer adapter. Geometry inside INSERT references is expanded into
+its transformed model-space representation while retaining the source INSERT.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Iterator
 
 import ezdxf
 from ezdxf.entities import DXFGraphic
@@ -72,6 +73,7 @@ class CadEntity:
     layer: str
     handle: str | None
     data: dict[str, Any] = field(default_factory=dict)
+    source_insert_handles: tuple[str, ...] = ()
 
 
 @dataclass
@@ -142,7 +144,7 @@ def _entity_data(entity: DXFGraphic) -> dict[str, Any]:
             "points": [_point(point) for point in points],
             "closed": bool(entity.dxf.get("flags", 0) & 1),
         }
-    if kind in {"TEXT", "MTEXT"}:
+    if kind in {"TEXT", "MTEXT", "ATTRIB"}:
         return {
             "text": entity.plain_text() if kind == "MTEXT" else str(entity.dxf.text),
             "insert": _point(entity.dxf.insert),
@@ -150,6 +152,74 @@ def _entity_data(entity: DXFGraphic) -> dict[str, Any]:
     if kind == "INSERT":
         return {"block_name": str(entity.dxf.name), "insert": _point(entity.dxf.insert)}
     return {}
+
+
+def _iter_modelspace_entities(
+    entities: Iterable[DXFGraphic], *, max_block_depth: int = 32
+) -> Iterator[tuple[DXFGraphic, str, tuple[str, ...]]]:
+    """Yield model-space entities and transformed contents of nested blocks.
+
+    ``virtual_entities()`` applies an INSERT's location, rotation and scale.
+    Layer-0 entities inherit the containing INSERT layer, matching AutoCAD's
+    block-layer convention. ``source_insert_handles`` points back to the
+    physical model-space INSERT for geometry that ezdxf materializes virtually.
+    """
+
+    def walk(
+        items: Iterable[DXFGraphic],
+        inherited_layer: str | None,
+        insert_handles: tuple[str, ...],
+        depth: int,
+    ) -> Iterator[tuple[DXFGraphic, str, tuple[str, ...]]]:
+        for entity in items:
+            if not isinstance(entity, DXFGraphic):
+                continue
+            layer = str(entity.dxf.get("layer", "0"))
+            effective_layer = inherited_layer if layer == "0" and inherited_layer else layer
+            if entity.dxftype() != "INSERT":
+                yield entity, effective_layer, insert_handles
+                continue
+
+            # Keep INSERT records in the neutral model for diagnostics and block
+            # counts, then add each rendered instance's transformed contents.
+            yield entity, effective_layer, insert_handles
+            if depth >= max_block_depth:
+                raise ValueError(
+                    f"Block nesting exceeds {max_block_depth} levels at "
+                    f"INSERT {entity.dxf.get('handle', 'unknown')} "
+                    f"({entity.dxf.get('name', 'unnamed')})."
+                )
+
+            handle = entity.dxf.get("handle")
+            next_handles = insert_handles
+            if handle and (not next_handles or next_handles[-1] != str(handle)):
+                next_handles = (*next_handles, str(handle))
+            try:
+                instances = entity.multi_insert() if entity.mcount > 1 else (entity,)
+                for instance in instances:
+                    for child in instance.virtual_entities():
+                        child_layer = str(child.dxf.get("layer", "0"))
+                        if child_layer == "0" and effective_layer != "0":
+                            # virtual entities are detached copies; resolving the
+                            # inherited layer here does not alter the source DXF.
+                            child.dxf.layer = effective_layer
+                        yield from walk((child,), effective_layer, next_handles, depth + 1)
+                    for attribute in getattr(instance, "attribs", ()):
+                        attribute_layer = str(attribute.dxf.get("layer", "0"))
+                        if attribute_layer == "0" and effective_layer != "0":
+                            attribute.dxf.layer = effective_layer
+                        yield attribute, (
+                            effective_layer if attribute_layer == "0" else attribute_layer
+                        ), next_handles
+            except Exception as exc:
+                name = str(entity.dxf.get("name", "unnamed"))
+                insert_handle = str(handle) if handle else "unknown"
+                raise ValueError(
+                    f"Could not expand DXF block '{name}' at INSERT "
+                    f"{insert_handle}: {exc}"
+                ) from exc
+
+    yield from walk(entities, None, (), 0)
 
 
 def read_dxf(path: str | Path) -> CadDocument:
@@ -168,15 +238,19 @@ def read_dxf(path: str | Path) -> CadDocument:
     layers = sorted(str(layer.dxf.name) for layer in drawing.layers)
     entities: list[CadEntity] = []
 
-    for entity in drawing.modelspace():
-        if not isinstance(entity, DXFGraphic):
-            continue
+    for entity, layer, source_insert_handles in _iter_modelspace_entities(
+        drawing.modelspace()
+    ):
+        entity_handle = entity.dxf.get("handle") or (
+            source_insert_handles[-1] if source_insert_handles else None
+        )
         entities.append(
             CadEntity(
                 entity_type=entity.dxftype(),
-                layer=str(entity.dxf.get("layer", "0")),
-                handle=getattr(entity.dxf, "handle", None),
+                layer=layer,
+                handle=str(entity_handle) if entity_handle else None,
                 data=_entity_data(entity),
+                source_insert_handles=source_insert_handles,
             )
         )
 

@@ -44,7 +44,7 @@ If the converter is installed in a non-standard location, set the environment va
 
 DWG import is optional: users who only open DXF files do not need ODA File Converter.
 
-## Install Tesseract
+### Install Tesseract
 
 Ubuntu/Debian:
 

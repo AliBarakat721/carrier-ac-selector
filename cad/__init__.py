@@ -1,6 +1,7 @@
 """CAD import and geometry analysis for Carrier AC Selector."""
 
 from .dxf_reader import CadDocument, CadEntity, read_dxf
+from .importer import DwgImportError, read_cad_file
 from .space_detector import RoomSpace, detect_spaces
 from .layer_manager import ensure_hvac_layers, validate_hvac_layers
 from .block_manager import (
@@ -59,6 +60,8 @@ __all__ = [
     "reopen_and_verify",
     "validate_export_document",
     "read_dxf",
+    "read_cad_file",
+    "DwgImportError",
     "CAD_LAYERS",
     "TAG_CONFIG",
     "capacity_margin_pct",

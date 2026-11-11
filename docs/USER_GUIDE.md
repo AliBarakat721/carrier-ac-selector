@@ -102,7 +102,7 @@ C:\Program Files\Tesseract-OCR
 
 بعد تعديل PATH أغلق PowerShell وافتحه من جديد. عند تشغيل البرنامج سيظهر تحذير إذا لم يجد Tesseract، لكن باقي وظائف البرنامج ستظل متاحة.
 
-## 5. استيراد مخططات AutoCAD (DWG / DXF)
+### استيراد مخططات AutoCAD (DWG / DXF)
 
 داخل تبويب **CAD Workflow** اضغط **Upload DWG / DXF** واختر مخطط الدور.
 

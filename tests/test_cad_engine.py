@@ -111,6 +111,20 @@ def test_bulge_is_preserved_and_curved_boundary_is_not_flattened(tmp_path):
     assert rooms[0].area != 100.0
 
 
+def test_self_intersecting_polygon_is_marked_invalid(tmp_path):
+    source = tmp_path / "bow-tie.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    drawing.modelspace().add_lwpolyline([(0, 0), (5, 5), (0, 5), (5, 0)], close=True)
+    drawing.saveas(source)
+
+    rooms = detect_spaces(source, include_wall_lines=False)
+
+    assert len(rooms) == 1
+    assert rooms[0].status == "INVALID_GEOMETRY"
+    assert rooms[0].geometry_diagnostic
+
+
 def test_missing_dxf_is_reported():
     with pytest.raises(FileNotFoundError):
         read_dxf("does-not-exist.dxf")

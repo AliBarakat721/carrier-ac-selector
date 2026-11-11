@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import uuid
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,7 +12,7 @@ from typing import Iterable, Mapping
 
 import ezdxf
 
-from .block_manager import insert_block_reference, populate_attributes, synchronize_attributes
+from .block_manager import create_block_definition, insert_block_reference, populate_attributes, synchronize_attributes
 from .layer_manager import ensure_hvac_layers, validate_hvac_layers
 from .schedule_builder import build_equipment_schedule, export_schedule_data
 from .tag_config import TAG_CONFIG, tag_block_name, validate_unique_entity_ids
@@ -62,6 +63,7 @@ def _update_or_insert(
     existing_ids: set[str],
 ) -> object:
     entity_id = str(attributes["ENTITY_ID"]).strip()
+    create_block_definition(document, tag_type)
     existing = _existing_references(document, tag_type).get(entity_id)
     if existing is not None:
         if position is not None:
@@ -81,16 +83,22 @@ def _update_or_insert(
 
 def _room_attributes(room: object) -> dict[str, object]:
     unit_status = getattr(room, "unit_status", "VERIFIED")
+    room_id = str(room.room_id)
+    entity_id = room_id if room_id.upper().startswith("ROOM-") else f"ROOM-{room_id}"
     return {
-        "ENTITY_ID": f"ROOM-{room.room_id}",
+        "ENTITY_ID": entity_id,
         "ROOM_ID": room.room_id,
         "ROOM_NAME": room.label or "",
         "AREA_M2": room.area if unit_status == "VERIFIED" else None,
-        "PERIMETER_M": room.perimeter,
+        "PERIMETER_M": room.perimeter if unit_status == "VERIFIED" else None,
         "DETECTION_STATUS": room.status,
         "ROOM_SOURCE": room.source,
         "GEOMETRY_VERIFICATION": room.status,
         "AREA_SOURCE": "CAD" if unit_status == "VERIFIED" else "UNIT_UNKNOWN",
+        "AREA_RAW": getattr(room, "raw_area", room.area),
+        "PERIMETER_RAW": getattr(room, "raw_perimeter", room.perimeter),
+        "DRAWING_UNITS": getattr(room, "drawing_units", "unitless"),
+        "UNIT_STATUS": unit_status,
     }
 
 
@@ -141,7 +149,7 @@ def export_hvac_dxf(
     outdoor = [dict(item) for item in outdoor_units]
     room_list = list(rooms)
     all_ids = [str(item.get("ENTITY_ID", "")) for item in indoor + outdoor]
-    all_ids.extend(f"ROOM-{room.room_id}" for room in room_list)
+    all_ids.extend(_room_attributes(room)["ENTITY_ID"] for room in room_list)
     validate_unique_entity_ids(all_ids)
 
     existing_ids = set()
@@ -181,6 +189,7 @@ def export_hvac_dxf(
     temporary_schedule: Path | None = None
     backup_dxf: Path | None = None
     backup_schedule: Path | None = None
+    rollback_success = True
     try:
         if schedule_destination:
             schedule_destination.parent.mkdir(parents=True, exist_ok=True)
@@ -197,32 +206,38 @@ def export_hvac_dxf(
         if post_save_errors:
             raise ValueError("DXF round-trip validation failed: " + "; ".join(post_save_errors))
         if destination.exists():
-            backup_dxf = destination.with_name(f".{destination.name}.backup")
+            backup_dxf = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.backup")
             shutil.copy2(destination, backup_dxf)
         if schedule_destination and schedule_destination.exists():
-            backup_schedule = schedule_destination.with_name(f".{schedule_destination.name}.backup")
+            backup_schedule = schedule_destination.with_name(f".{schedule_destination.name}.{uuid.uuid4().hex}.backup")
             shutil.copy2(schedule_destination, backup_schedule)
         try:
             os.replace(temporary_dxf, destination)
             if schedule_destination and temporary_schedule:
                 os.replace(temporary_schedule, schedule_destination)
         except Exception:
-            if backup_dxf and backup_dxf.exists():
-                os.replace(backup_dxf, destination)
-            elif destination.exists():
-                destination.unlink()
-            if backup_schedule and backup_schedule.exists():
-                os.replace(backup_schedule, schedule_destination)
-            elif schedule_destination and schedule_destination.exists():
-                schedule_destination.unlink()
+            rollback_success = False
+            try:
+                if backup_dxf and backup_dxf.exists():
+                    os.replace(backup_dxf, destination)
+                elif destination.exists():
+                    destination.unlink()
+                if backup_schedule and backup_schedule.exists():
+                    os.replace(backup_schedule, schedule_destination)
+                elif schedule_destination and schedule_destination.exists():
+                    schedule_destination.unlink()
+                rollback_success = True
+            finally:
+                if not rollback_success:
+                    raise
             raise
     finally:
         temporary_dxf.unlink(missing_ok=True)
         if temporary_schedule:
             temporary_schedule.unlink(missing_ok=True)
-        if backup_dxf:
+        if rollback_success and backup_dxf:
             backup_dxf.unlink(missing_ok=True)
-        if backup_schedule:
+        if rollback_success and backup_schedule:
             backup_schedule.unlink(missing_ok=True)
 
     return ExportResult(

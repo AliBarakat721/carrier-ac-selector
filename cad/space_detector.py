@@ -26,6 +26,10 @@ class RoomSpace:
     status: str = "NEEDS_REVIEW"
     boundary_handles: tuple[str, ...] = ()
     unit_status: str = "VERIFIED"
+    raw_area: float | None = None
+    raw_perimeter: float | None = None
+    drawing_units: str = "unitless"
+    geometry_diagnostic: str | None = None
 
 
 def _scaled_metrics(polygon: Polygon, scale: float | None) -> tuple[float, float]:
@@ -34,7 +38,7 @@ def _scaled_metrics(polygon: Polygon, scale: float | None) -> tuple[float, float
     return float(polygon.area * scale * scale), float(polygon.length * scale)
 
 
-def _bulged_points(points: list[tuple[float, float]], bulges: list[float], closed: bool, tolerance: float) -> list[tuple[float, float]]:
+def _bulged_points(points: list[tuple[float, float]], bulges: list[float], closed: bool, arc_angle_tolerance: float) -> list[tuple[float, float]]:
     """Approximate LWPOLYLINE bulge arcs with a documented angular tolerance."""
 
     if not any(abs(value) > 1e-12 for value in bulges):
@@ -60,7 +64,7 @@ def _bulged_points(points: list[tuple[float, float]], bulges: list[float], close
         sign = 1.0 if bulge > 0 else -1.0
         center = (midpoint[0] + sign * normal[0] * offset, midpoint[1] + sign * normal[1] * offset)
         start_angle = math.atan2(start[1] - center[1], start[0] - center[0])
-        segments = max(2, int(math.ceil(abs(theta) / max(tolerance, math.radians(5.0)))))
+        segments = max(2, int(math.ceil(abs(theta) / arc_angle_tolerance)))
         for step in range(1, segments):
             angle = start_angle + theta * step / segments
             result.append((center[0] + radius * math.cos(angle), center[1] + radius * math.sin(angle)))
@@ -69,7 +73,7 @@ def _bulged_points(points: list[tuple[float, float]], bulges: list[float], close
     return result
 
 
-def _closed_polyline_spaces(document: CadDocument, tolerance: float) -> list[RoomSpace]:
+def _closed_polyline_spaces(document: CadDocument, arc_angle_tolerance: float) -> list[RoomSpace]:
     rooms: list[RoomSpace] = []
     index = 1
     scale = document.unit_scale_to_meters
@@ -77,17 +81,20 @@ def _closed_polyline_spaces(document: CadDocument, tolerance: float) -> list[Roo
         if not entity.data.get("closed"):
             continue
         points = _bulged_points(
-            entity.data.get("points", []), entity.data.get("bulges", []), True, tolerance
+            entity.data.get("points", []), entity.data.get("bulges", []), True, arc_angle_tolerance
         )
         if len(points) < 3:
             continue
         polygon = Polygon(points)
-        if polygon.is_empty or polygon.area <= 0:
+        if polygon.is_empty:
             continue
-        if not polygon.is_valid:
-            polygon = polygon.buffer(0)
-        if polygon.is_empty or polygon.area <= 0:
+        if polygon.is_valid and polygon.area <= 0:
             continue
+        from shapely.validation import explain_validity
+        geometry_status = "NEEDS_REVIEW" if polygon.is_valid else "INVALID_GEOMETRY"
+        diagnostic = None if polygon.is_valid else explain_validity(polygon)
+        raw_area = float(polygon.area)
+        raw_perimeter = float(polygon.length)
         area, perimeter = _scaled_metrics(polygon, scale)
         rooms.append(
             RoomSpace(
@@ -97,24 +104,43 @@ def _closed_polyline_spaces(document: CadDocument, tolerance: float) -> list[Roo
                 perimeter=perimeter,
                 source="closed_polyline",
                 layer=entity.layer,
+                status=geometry_status,
                 boundary_handles=(entity.handle,) if entity.handle else (),
                 unit_status="VERIFIED" if scale is not None else "UNIT_UNKNOWN",
+                raw_area=raw_area,
+                raw_perimeter=raw_perimeter,
+                drawing_units=document.units,
+                geometry_diagnostic=diagnostic,
             )
         )
         index += 1
     return rooms
 
 
-def _line_polygon_spaces(document: CadDocument, starting_index: int, tolerance: float) -> list[RoomSpace]:
+def _snap_line_endpoints(lines: list[tuple[tuple[float, float], tuple[float, float], str | None]], gap_tolerance: float):
+    if gap_tolerance <= 0:
+        return lines
+    endpoints = [point for start, end, _ in lines for point in (start, end)]
+    snapped: dict[tuple[float, float], tuple[float, float]] = {}
+    for point in endpoints:
+        target = next((other for other in snapped.values() if math.hypot(point[0] - other[0], point[1] - other[1]) <= gap_tolerance), None)
+        snapped[point] = target or point
+    return [(snapped[start], snapped[end], handle) for start, end, handle in lines]
+
+
+def _line_polygon_spaces(document: CadDocument, starting_index: int, tolerance: float, gap_tolerance: float) -> list[RoomSpace]:
     lines: list[LineString] = []
     line_records: list[tuple[LineString, str | None]] = []
+    raw_lines = []
     for entity in document.entities_of_type("LINE"):
         start = entity.data.get("start")
         end = entity.data.get("end")
         if start and end and start != end:
+            raw_lines.append((start, end, entity.handle))
+    for start, end, handle in _snap_line_endpoints(raw_lines, gap_tolerance):
             line = LineString([start, end])
             lines.append(line)
-            line_records.append((line, entity.handle))
+            line_records.append((line, handle))
     if not lines:
         return []
 
@@ -130,6 +156,8 @@ def _line_polygon_spaces(document: CadDocument, starting_index: int, tolerance: 
             if handle and line.distance(polygon.boundary) <= tolerance
         )
         area, perimeter = _scaled_metrics(polygon, scale)
+        raw_area = float(polygon.area)
+        raw_perimeter = float(polygon.length)
         rooms.append(
             RoomSpace(
                 room_id=f"ROOM-{offset:03d}",
@@ -140,6 +168,10 @@ def _line_polygon_spaces(document: CadDocument, starting_index: int, tolerance: 
                 status="NEEDS_REVIEW",
                 boundary_handles=handles,
                 unit_status="VERIFIED" if scale is not None else "UNIT_UNKNOWN",
+                raw_area=raw_area,
+                raw_perimeter=raw_perimeter,
+                drawing_units=document.units,
+                geometry_diagnostic=None,
             )
         )
     return rooms
@@ -176,6 +208,8 @@ def detect_spaces(
     *,
     include_wall_lines: bool = True,
     tolerance: float = 1e-6,
+    gap_tolerance: float = 0.0,
+    arc_angle_tolerance: float = math.radians(1.0),
 ) -> list[RoomSpace]:
     """Detect candidate rooms and remove near-identical geometric duplicates."""
 
@@ -186,7 +220,9 @@ def detect_spaces(
     )
     if tolerance <= 0:
         raise ValueError("Geometry tolerance must be positive")
-    rooms = _closed_polyline_spaces(document, tolerance)
+    if arc_angle_tolerance <= 0:
+        raise ValueError("Arc angle tolerance must be positive")
+    rooms = _closed_polyline_spaces(document, arc_angle_tolerance)
     if include_wall_lines:
-        rooms.extend(_line_polygon_spaces(document, len(rooms) + 1, tolerance))
+        rooms.extend(_line_polygon_spaces(document, len(rooms) + 1, tolerance, gap_tolerance))
     return _deduplicate_spaces(rooms)

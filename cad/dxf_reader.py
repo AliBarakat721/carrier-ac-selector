@@ -119,6 +119,7 @@ def _entity_data(entity: DXFGraphic) -> dict[str, Any]:
     if kind == "POLYLINE":
         return {
             "points": [_point(vertex.dxf.location) for vertex in entity.vertices],
+            "bulges": [float(vertex.dxf.get("bulge", 0.0) or 0.0) for vertex in entity.vertices],
             "closed": bool(entity.is_closed),
         }
     if kind in {"TEXT", "MTEXT"}:

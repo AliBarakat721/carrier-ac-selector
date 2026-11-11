@@ -176,3 +176,40 @@ def test_export_rolls_back_when_second_output_replace_fails(tmp_path, monkeypatc
 
     assert not output.exists()
     assert not schedule.exists()
+
+
+def test_unitless_room_export_does_not_label_raw_metrics_as_metric(tmp_path):
+    source = tmp_path / "source.dxf"
+    output = tmp_path / "hvac-output.dxf"
+    make_source(source)
+    room = SimpleNamespace(
+        room_id="ROOM-001",
+        label="Unknown Units",
+        area=20.0,
+        perimeter=18.0,
+        raw_area=20.0,
+        raw_perimeter=18.0,
+        drawing_units="unitless",
+        unit_status="UNIT_UNKNOWN",
+        status="NEEDS_REVIEW",
+        source="closed_polyline",
+        polygon=Polygon([(0, 0), (5, 0), (5, 4), (0, 4)]),
+    )
+    export_hvac_dxf(
+        source,
+        output,
+        indoor_units=[indoor()],
+        outdoor_units=[outdoor()],
+        relationships=[],
+        rooms=[room],
+    )
+
+    exported = ezdxf.readfile(output)
+    room_ref = next(
+        ref for ref in exported.modelspace().query("INSERT")
+        if any(attr.dxf.tag == "ENTITY_ID" and attr.dxf.text == "ROOM-001" for attr in ref.attribs)
+    )
+    values = {attr.dxf.tag: attr.dxf.text for attr in room_ref.attribs}
+    assert values["AREA_M2"] == ""
+    assert values["PERIMETER_M"] == ""
+    assert values["AREA_SOURCE"] == "UNIT_UNKNOWN"

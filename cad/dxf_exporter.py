@@ -165,11 +165,11 @@ def export_hvac_dxf(
         position = tuple(raw_position) if raw_position is not None else None
         _update_or_insert(document, "outdoor_unit", position, item, existing_ids)
     for room in room_list:
-        centroid = room.polygon.centroid
+        representative = room.polygon.representative_point()
         _update_or_insert(
             document,
             "room_label",
-            (float(centroid.x), float(centroid.y)),
+            (float(representative.x), float(representative.y)),
             _room_attributes(room),
             existing_ids,
         )

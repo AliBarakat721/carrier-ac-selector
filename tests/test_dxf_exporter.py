@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 import ezdxf
-from shapely.geometry import Polygon
+from shapely.geometry import Point, Polygon
 
 from cad.dxf_exporter import export_hvac_dxf, reopen_and_verify
 from cad.tag_config import CAD_LAYERS
@@ -213,3 +213,38 @@ def test_unitless_room_export_does_not_label_raw_metrics_as_metric(tmp_path):
     assert values["AREA_M2"] == ""
     assert values["PERIMETER_M"] == ""
     assert values["AREA_SOURCE"] == "UNIT_UNKNOWN"
+
+
+def test_room_label_uses_point_inside_irregular_room(tmp_path):
+    source = tmp_path / "source.dxf"
+    output = tmp_path / "hvac-output.dxf"
+    make_source(source)
+    room_polygon = Polygon([(0, 0), (4, 0), (4, 1), (1, 1), (1, 4), (0, 4)])
+    room = SimpleNamespace(
+        room_id="G-L",
+        label="L Room",
+        area=room_polygon.area,
+        perimeter=room_polygon.length,
+        raw_area=room_polygon.area,
+        raw_perimeter=room_polygon.length,
+        drawing_units="meters",
+        unit_status="VERIFIED",
+        status="NEEDS_REVIEW",
+        source="closed_polyline",
+        polygon=room_polygon,
+    )
+    export_hvac_dxf(
+        source,
+        output,
+        indoor_units=[indoor()],
+        outdoor_units=[outdoor()],
+        relationships=[],
+        rooms=[room],
+    )
+
+    exported = ezdxf.readfile(output)
+    room_ref = next(
+        ref for ref in exported.modelspace().query("INSERT")
+        if any(attr.dxf.tag == "ENTITY_ID" and attr.dxf.text == "ROOM-G-L" for attr in ref.attribs)
+    )
+    assert room_polygon.contains(Point(room_ref.dxf.insert.x, room_ref.dxf.insert.y))

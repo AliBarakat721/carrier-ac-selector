@@ -82,6 +82,19 @@ def test_millimeter_units_are_converted_to_square_meters(tmp_path):
     assert round(rooms[0].perimeter, 3) == 18.0
 
 
+def test_decimeter_units_use_the_correct_metric_scale(tmp_path):
+    source = tmp_path / "decimeters.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 14
+    drawing.modelspace().add_lwpolyline([(0, 0), (50, 0), (50, 40), (0, 40)], close=True)
+    drawing.saveas(source)
+
+    rooms = detect_spaces(source, include_wall_lines=False)
+
+    assert round(rooms[0].area, 3) == 20.0
+    assert round(rooms[0].perimeter, 3) == 18.0
+
+
 def test_unitless_geometry_is_marked_unknown(tmp_path):
     source = tmp_path / "unitless.dxf"
     drawing = ezdxf.new("R2018")

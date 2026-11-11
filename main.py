@@ -38,6 +38,10 @@ import pandas as pd
 import core
 import ocr_engine
 import updater
+from cad.dxf_exporter import export_hvac_dxf
+from cad.dxf_reader import read_dxf
+from cad.space_detector import detect_spaces
+from cad.workflow import RoomAssignment, build_indoor_placements, suggest_room_assignments
 from version import APP_VERSION
 import math
 
@@ -966,6 +970,11 @@ class HAPToCarrierApp(QMainWindow):
         self._nav_silent      = False  # True while Prev/Next changes selection
         # ── [NEW/OPTIONAL] Selection cart — purely additive ──
         self.selected_units   = {}     # {system_name: pd.Series}
+        self.cad_source_path = ""
+        self.cad_document = None
+        self.cad_rooms = []
+        self.cad_diagnostics = []
+        self.cad_room_systems = {}
 
         self._build_ui()
         self.setAcceptDrops(True)
@@ -1609,6 +1618,10 @@ class HAPToCarrierApp(QMainWindow):
         self.tab_selected = selected_tab
         self.tabs.addTab(selected_tab, "🛒  Selected (0)")
 
+        # ── CAD + HAP workflow tab ─────────────────────────────
+        self.cad_tab = self._build_cad_tab()
+        self.tabs.addTab(self.cad_tab, "🧭  CAD Workflow")
+
         # ── Keyboard shortcuts for Systems navigation ──
         # Scoped to the Systems table so they don't fire elsewhere.
         self._nav_shortcut_prev = QShortcut(
@@ -1653,6 +1666,211 @@ class HAPToCarrierApp(QMainWindow):
 
         layout.addWidget(self.tabs)
         return panel
+
+    def _build_cad_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 4, 0, 0)
+        layout.setSpacing(6)
+
+        intro = QLabel(
+            "ارفع ملف DXF ثم ارفع تقرير HAP من زر HAP المعتاد. "
+            "بعد اختيار الوحدات من Results/Systems، اربط كل Room بالـ HAP System "
+            "واضغط Export Indoor Units."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color: #93c5fd; padding: 4px;")
+        layout.addWidget(intro)
+
+        buttons = QHBoxLayout()
+        self.btn_cad_upload = QPushButton("📐  Upload DXF")
+        self.btn_cad_upload.setObjectName("btn_pick")
+        self.btn_cad_upload.clicked.connect(self.upload_cad)
+        buttons.addWidget(self.btn_cad_upload)
+        self.btn_cad_export = QPushButton("💾  Export Indoor Units + Schedule")
+        self.btn_cad_export.setObjectName("btn_success")
+        self.btn_cad_export.setEnabled(False)
+        self.btn_cad_export.clicked.connect(self.export_cad_workflow)
+        buttons.addWidget(self.btn_cad_export)
+        buttons.addStretch()
+        layout.addLayout(buttons)
+
+        self.lbl_cad_status = QLabel("No DXF loaded — upload a floor plan to begin.")
+        self.lbl_cad_status.setWordWrap(True)
+        self.lbl_cad_status.setStyleSheet("color: #6b7280; padding: 2px 4px;")
+        layout.addWidget(self.lbl_cad_status)
+
+        self.table_cad = QTableWidget()
+        self.table_cad.setAlternatingRowColors(True)
+        self.table_cad.setColumnCount(6)
+        self.table_cad.setHorizontalHeaderLabels(
+            ["Room ID", "Label", "Area (m²)", "Status", "HAP System", "Selected Unit"]
+        )
+        self.table_cad.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.table_cad.horizontalHeader().setStretchLastSection(True)
+        self.table_cad.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table_cad.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table_cad.verticalHeader().setVisible(False)
+        layout.addWidget(self.table_cad)
+
+        hint = QLabel(
+            "ملاحظة هندسية: يتم وضع Indoor Units داخل representative point لكل غرفة. "
+            "لا يتم وضع Outdoor Units تلقائيًا لأن الغرفة ليست موقعًا آمنًا للوحدة الخارجية؛ "
+            "سيظل ذلك خطوة Placement منفصلة."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #f59e0b; font-size: 11px; padding: 2px 4px;")
+        layout.addWidget(hint)
+        return tab
+
+    def upload_cad(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select CAD Floor Plan", "", "DXF Files (*.dxf *.DXF);;All Files (*)"
+        )
+        if path:
+            self._load_cad(path)
+
+    def _load_cad(self, path: str):
+        try:
+            document = read_dxf(path)
+            diagnostics = []
+            rooms = detect_spaces(document, diagnostics=diagnostics)
+        except Exception as exc:
+            self.cad_source_path = ""
+            self.cad_document = None
+            self.cad_rooms = []
+            self.cad_diagnostics = []
+            self._render_cad_rooms()
+            QMessageBox.critical(self, "CAD Import Error", str(exc))
+            return
+        self.cad_source_path = path
+        self.cad_document = document
+        self.cad_rooms = rooms
+        self.cad_diagnostics = diagnostics
+        self.cad_room_systems = suggest_room_assignments(rooms, self.systems)
+        self._render_cad_rooms()
+        self._set_status(f"✅ DXF loaded — {len(rooms)} room(s) detected.")
+
+    def _cad_system_names(self):
+        names = []
+        for system in getattr(self, "systems", []):
+            name = str(getattr(system, "name", "")).strip()
+            if name and name not in names:
+                names.append(name)
+        for name in self.selected_units:
+            if name not in names:
+                names.append(str(name))
+        return names
+
+    def _refresh_cad_workflow(self):
+        if not self.cad_rooms:
+            return
+        suggested = suggest_room_assignments(self.cad_rooms, self.systems)
+        for room_id, system_name in suggested.items():
+            self.cad_room_systems.setdefault(room_id, system_name)
+        self._render_cad_rooms()
+
+    def _on_cad_system_changed(self, room_id: str, combo):
+        selected = combo.currentText().strip()
+        if selected == "Unassigned":
+            self.cad_room_systems.pop(room_id, None)
+        else:
+            self.cad_room_systems[room_id] = selected
+        self._update_cad_export_state()
+
+    def _render_cad_rooms(self):
+        if not hasattr(self, "table_cad"):
+            return
+        self.table_cad.setSortingEnabled(False)
+        self.table_cad.setRowCount(len(self.cad_rooms))
+        system_names = self._cad_system_names()
+        for row_index, room in enumerate(self.cad_rooms):
+            values = [
+                room.room_id,
+                room.label or "—",
+                f"{room.area:,.2f}" if room.unit_status == "VERIFIED" else "—",
+                room.status,
+            ]
+            for column, value in enumerate(values):
+                self.table_cad.setItem(row_index, column, QTableWidgetItem(str(value)))
+            combo = QComboBox()
+            combo.addItem("Unassigned")
+            combo.addItems(system_names)
+            current = self.cad_room_systems.get(room.room_id, "")
+            if current in system_names:
+                combo.setCurrentText(current)
+            combo.currentTextChanged.connect(
+                lambda _text, room_id=room.room_id, widget=combo: self._on_cad_system_changed(room_id, widget)
+            )
+            self.table_cad.setCellWidget(row_index, 4, combo)
+            entry = self.selected_units.get(current)
+            unit_text = "—"
+            if entry:
+                unit_text = f"{entry.get('units', 1)}x {entry.get('row', {}).get('Indoor Unit Model', 'selected')}"
+            self.table_cad.setItem(row_index, 5, QTableWidgetItem(str(unit_text)))
+        self.table_cad.setSortingEnabled(True)
+        assigned = sum(1 for room in self.cad_rooms if self.cad_room_systems.get(room.room_id))
+        diag_text = f"; {len(self.cad_diagnostics)} geometry diagnostic(s)" if self.cad_diagnostics else ""
+        self.lbl_cad_status.setText(
+            f"{len(self.cad_rooms)} room(s) detected; {assigned} system assignment(s){diag_text}."
+        )
+        self._update_cad_export_state()
+
+    def _update_cad_export_state(self):
+        ready = bool(self.cad_source_path and self.cad_rooms and any(
+            room.room_id in self.cad_room_systems and self.cad_room_systems[room.room_id] in self.selected_units
+            for room in self.cad_rooms
+        ))
+        if hasattr(self, "btn_cad_export"):
+            self.btn_cad_export.setEnabled(ready)
+
+    def export_cad_workflow(self):
+        if not self.cad_source_path:
+            QMessageBox.information(self, "No DXF", "Upload a DXF floor plan first.")
+            return
+        assignments = [
+            RoomAssignment(room.room_id, self.cad_room_systems.get(room.room_id, ""))
+            for room in self.cad_rooms
+            if self.cad_room_systems.get(room.room_id)
+        ]
+        indoor, relationships, warnings = build_indoor_placements(
+            self.cad_rooms, assignments, self.selected_units
+        )
+        if not indoor:
+            QMessageBox.warning(self, "No Indoor Units", "Assign rooms to systems and select units first.")
+            return
+        if warnings:
+            QMessageBox.warning(self, "Incomplete CAD Mapping", "\n".join(warnings))
+        output, _ = QFileDialog.getSaveFileName(
+            self, "Export HVAC DXF", "hvac_placed.dxf", "DXF Files (*.dxf)"
+        )
+        if not output:
+            return
+        from pathlib import Path
+        schedule_path = str(Path(output).with_suffix(".csv"))
+        try:
+            result = export_hvac_dxf(
+                self.cad_source_path,
+                output,
+                indoor_units=indoor,
+                outdoor_units=[],
+                relationships=relationships,
+                rooms=self.cad_rooms,
+                schedule_path=schedule_path,
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "CAD Export Error", str(exc))
+            return
+        self._set_status(
+            f"✅ Exported {result.indoor_count} indoor unit(s), {result.room_count} room tag(s) "
+            f"and schedule → {output}"
+        )
+        QMessageBox.information(
+            self, "CAD Export Complete",
+            f"DXF saved to:\n{output}\n\nSchedule saved to:\n{schedule_path}\n\n"
+            "Outdoor units were not placed automatically; assign their locations in a separate placement step."
+        )
+
 
     # ──────────────────────────────────────────────────────────────
     # OCR Workflow
@@ -1748,6 +1966,7 @@ class HAPToCarrierApp(QMainWindow):
         # Batch: detect every system in this report (may be just one)
         self.systems = core.parse_all_systems(text)
         self._render_batch()
+        self._refresh_cad_workflow()
         # Single-system report → remember its name for export defaults
         if len(self.systems) == 1:
             self.current_system_name = self.systems[0].name
@@ -3488,6 +3707,7 @@ class HAPToCarrierApp(QMainWindow):
             "load_sensible": self.current_sensible,
         }
         self._render_selected_table()
+        self._refresh_cad_workflow()
 
         verb = "تحديث" if existed else "إضافة"
         self._set_status(
@@ -3542,6 +3762,7 @@ class HAPToCarrierApp(QMainWindow):
             "load_sensible": self.current_sensible,
         }
         self._render_selected_table()
+        self._refresh_cad_workflow()
 
         verb = "تحديث" if existed else "إضافة"
         self._set_status(

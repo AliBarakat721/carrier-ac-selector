@@ -15,6 +15,11 @@ Desktop tool built with PySide6 that reads a HAP *Air System Sizing Summary* scr
 - **Electrical schedule:** estimated FLA, breaker, cable sizing, voltage drop, feeder, panel, generator, and UPS values.
 - **Inverter ROI:** energy, cost, payback, lifecycle, and CO₂ comparison.
 - **Export:** Excel, CSV, and formatted Word reports.
+- **CAD + HAP workflow:** upload a DXF floor plan, detect any number of rooms,
+  map rooms to parsed HAP systems, choose Carrier units, and export placed
+  indoor-unit tags plus an equipment schedule. Outdoor-unit placement remains
+  a separate user-approved step because room geometry alone is not a safe
+  outdoor-unit location.
 - **UI:** dark PySide6 interface, background OCR worker, image/PDF preview, and OCR debug tab.
 
 For the complete end-user workflow, see the [detailed User Guide](docs/USER_GUIDE.md).

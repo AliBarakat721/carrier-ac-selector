@@ -5,7 +5,7 @@ import ezdxf
 import pytest
 
 from cad.dxf_reader import read_dxf
-from cad.space_detector import detect_spaces
+from cad.space_detector import _snap_line_endpoints, detect_spaces
 
 
 def make_sample_dxf(path: Path) -> None:
@@ -173,7 +173,161 @@ def test_gap_snapping_reports_moved_endpoints(tmp_path):
 
     assert rooms
     assert diagnostics
-    assert diagnostics[0]["distance"] == pytest.approx(0.001)
+    snapped = [item for item in diagnostics if item["type"] == "snapped_endpoint"]
+    assert snapped[0]["distance"] == pytest.approx(0.002)
+    assert snapped[0]["snapped_to"] == (5.0, 0.0)
+    assert snapped[0]["handle"]
+    assert any(room.status == "SNAPPED" for room in rooms)
+    assert any(room.geometry_diagnostic and snapped[0]["handle"] in room.geometry_diagnostic for room in rooms)
+
+
+def test_unresolved_gaps_are_unique_and_include_gaps_larger_than_ten_times_tolerance():
+    _, diagnostics = _snap_line_endpoints(
+        [((0.0, 0.0), (1.0, 0.0), "A"), ((3.0, 0.0), (4.0, 0.0), "B")],
+        0.1,
+    )
+
+    gaps = [item for item in diagnostics if item["type"] == "unresolved_gap"]
+    pairs = {
+        frozenset((item["endpoint"], item["other_endpoint"]))
+        for item in gaps
+    }
+    assert len(pairs) == len(gaps)
+    assert any(item["distance"] > 1.0 for item in gaps)
+
+
+def test_circle_is_detected_as_a_room(tmp_path):
+    source = tmp_path / "circle.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    drawing.modelspace().add_circle((0, 0), 5, dxfattribs={"layer": "WALLS"})
+    drawing.saveas(source)
+
+    rooms = detect_spaces(source, include_wall_lines=False)
+
+    assert len(rooms) == 1
+    assert rooms[0].source == "circle"
+    assert rooms[0].area == pytest.approx(math.pi * 25, rel=1e-3)
+
+
+def test_arc_segments_can_close_a_room(tmp_path):
+    source = tmp_path / "arc-room.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    modelspace = drawing.modelspace()
+    modelspace.add_arc((5, 0), 5, 0, 180, dxfattribs={"layer": "WALLS"})
+    modelspace.add_line((0, 0), (10, 0), dxfattribs={"layer": "WALLS"})
+    drawing.saveas(source)
+
+    rooms = detect_spaces(source, wall_layers={"WALLS"})
+
+    assert len(rooms) == 1
+    assert rooms[0].area == pytest.approx(math.pi * 25 / 2, rel=2e-3)
+
+
+def test_spline_is_read_and_polygonized_when_marked_closed(tmp_path):
+    source = tmp_path / "spline.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    spline = drawing.modelspace().add_spline(
+        fit_points=[(0, 0), (4, 0), (4, 4), (0, 4), (0, 0)],
+        dxfattribs={"layer": "WALLS"},
+    )
+    spline.dxf.flags = 1
+    drawing.saveas(source)
+
+    document = read_dxf(source)
+    rooms = detect_spaces(source, include_wall_lines=False)
+
+    assert document.entities_of_type("SPLINE")[0].data["points"]
+    assert len(rooms) == 1
+    assert rooms[0].source == "spline"
+    assert rooms[0].area > 0
+
+
+def test_t_junctions_are_split_and_reported(tmp_path):
+    source = tmp_path / "t-junction.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    modelspace = drawing.modelspace()
+    for start, end in [
+        ((0, 0), (10, 0)),
+        ((10, 0), (10, 10)),
+        ((10, 10), (0, 10)),
+        ((0, 10), (0, 0)),
+        ((5, 0), (5, 10)),
+    ]:
+        modelspace.add_line(start, end, dxfattribs={"layer": "WALLS"})
+    drawing.saveas(source)
+    diagnostics = []
+
+    rooms = detect_spaces(source, wall_layers={"WALLS"}, diagnostics=diagnostics)
+
+    assert len(rooms) == 2
+    assert any(item["type"] == "t_junction" for item in diagnostics)
+
+
+def test_wall_layer_filter_excludes_non_wall_lines(tmp_path):
+    source = tmp_path / "wall-filter.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    modelspace = drawing.modelspace()
+    for layer, offset in (("WALLS", 0), ("FURNITURE", 20)):
+        for start, end in [
+            ((offset, 0), (offset + 5, 0)),
+            ((offset + 5, 0), (offset + 5, 4)),
+            ((offset + 5, 4), (offset, 4)),
+            ((offset, 4), (offset, 0)),
+        ]:
+            modelspace.add_line(start, end, dxfattribs={"layer": layer})
+    drawing.saveas(source)
+
+    rooms = detect_spaces(source, wall_layers={"WALLS"})
+
+    assert len(rooms) == 1
+    assert rooms[0].layer is None
+    assert set(rooms[0].boundary_handles)
+
+
+def test_room_text_is_assigned_to_containing_polygon(tmp_path):
+    source = tmp_path / "room-label.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    modelspace = drawing.modelspace()
+    for start, end in [
+        ((0, 0), (5, 0)), ((5, 0), (5, 4)), ((5, 4), (0, 4)), ((0, 4), (0, 0))
+    ]:
+        modelspace.add_line(start, end, dxfattribs={"layer": "WALLS"})
+    modelspace.add_text("Kitchen", dxfattribs={"insert": (2, 2), "layer": "ROOM-TEXT"})
+    drawing.saveas(source)
+
+    rooms = detect_spaces(source, wall_layers={"WALLS"}, label_layers={"ROOM-TEXT"})
+
+    assert len(rooms) == 1
+    assert rooms[0].label == "Kitchen"
+
+
+def test_room_id_is_stable_when_entity_order_changes(tmp_path):
+    paths = []
+    boundaries = [
+        [((0, 0), (5, 0)), ((5, 0), (5, 4)), ((5, 4), (0, 4)), ((0, 4), (0, 0))],
+        [((10, 0), (15, 0)), ((15, 0), (15, 4)), ((15, 4), (10, 4)), ((10, 4), (10, 0))],
+    ]
+    for index, order in enumerate((boundaries, list(reversed(boundaries)))):
+        path = tmp_path / f"stable-{index}.dxf"
+        drawing = ezdxf.new("R2018")
+        drawing.header["$INSUNITS"] = 6
+        modelspace = drawing.modelspace()
+        for boundary in order:
+            for start, end in boundary:
+                modelspace.add_line(start, end, dxfattribs={"layer": "WALLS"})
+        drawing.saveas(path)
+        paths.append(path)
+
+    first = detect_spaces(paths[0], wall_layers={"WALLS"})
+    second = detect_spaces(paths[1], wall_layers={"WALLS"})
+
+    assert sorted(room.room_id for room in first) == sorted(room.room_id for room in second)
 
 
 def test_missing_dxf_is_reported():

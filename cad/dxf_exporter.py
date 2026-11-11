@@ -232,7 +232,11 @@ def export_hvac_dxf(
                     schedule_destination.unlink()
                 rollback_success = True
             except Exception as restore_error:
-                backup_paths = ", ".join(str(path) for path in (backup_dxf, backup_schedule) if path)
+                backup_paths = ", ".join(
+                    str(path)
+                    for path in (backup_dxf, backup_schedule)
+                    if path and path.exists()
+                ) or "none"
                 raise RuntimeError(
                     f"Export rollback failed; recovery backups retained at: {backup_paths}"
                 ) from restore_error

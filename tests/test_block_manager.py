@@ -138,3 +138,27 @@ def test_legacy_missing_attribs_use_insert_transform_and_partial_updates_preserv
     synchronize_attributes(reference, "indoor_unit", {"ENTITY_ID": "INDOOR-TRANSFORMED", "TAG_ID": "IDU-TRANSFORMED"})
 
     assert next(attribute for attribute in reference.attribs if hasattr(attribute, "dxf") and attribute.dxf.tag == "ROOM_NAME").dxf.text == "MANUAL-ROOM-NAME"
+
+
+def test_legacy_aligned_attrib_preserves_transformed_align_point():
+    drawing = ezdxf.new("R2018")
+    block = drawing.blocks.new("HVAC_INDOOR_UNIT")
+    block.add_attdef("ENTITY_ID", insert=(0, 0))
+    aligned = block.add_attdef("TAG_ID", insert=(1, 0), dxfattribs={"halign": 2, "valign": 1})
+    aligned.dxf.align_point = (2, 0)
+    reference = drawing.modelspace().add_blockref("HVAC_INDOOR_UNIT", (10, 20))
+    reference.dxf.xscale = 2.0
+    reference.dxf.yscale = 3.0
+    reference.dxf.rotation = 90.0
+    reference.add_attrib("ENTITY_ID", "INDOOR-ALIGNED", insert=(10, 20))
+
+    create_block_definition(drawing, "indoor_unit")
+    synchronize_attributes(
+        reference,
+        "indoor_unit",
+        indoor_attributes("INDOOR-ALIGNED", "IDU-ALIGNED"),
+    )
+
+    attribute = next(attr for attr in reference.attribs if attr.dxf.tag == "TAG_ID")
+    expected = reference.matrix44().transform((2, 0, 0))
+    assert tuple(attribute.dxf.align_point) == pytest.approx(tuple(expected))

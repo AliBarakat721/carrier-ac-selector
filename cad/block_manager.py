@@ -146,6 +146,8 @@ def synchronize_attributes(block_reference: Any, tag_type: str, attributes: Mapp
                 dxfattribs["height"] = float(dxfattribs["height"]) * abs(scale_y)
             if attdef.dxf.hasattr("rotation"):
                 dxfattribs["rotation"] = float(attdef.dxf.rotation) + float(getattr(block_reference.dxf, "rotation", 0.0))
+            if attdef.dxf.hasattr("align_point"):
+                dxfattribs["align_point"] = wcs_insert(attdef.dxf.align_point)
             block_reference.add_attrib(tag, values.get(tag, ""), insert=wcs_insert(attdef.dxf.insert), dxfattribs=dxfattribs)
     for attribute in block_reference.attribs:
         if hasattr(attribute, "dxf") and attribute.dxf.tag in values:

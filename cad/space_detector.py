@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import math
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from shapely.geometry import LineString, Polygon
+from shapely.geometry import LineString, Point, Polygon
 from shapely.ops import polygonize, unary_union
+from shapely.strtree import STRtree
 from shapely.validation import explain_validity
 
 from .dxf_reader import CadDocument, read_dxf
@@ -119,43 +121,106 @@ def _closed_polyline_spaces(document: CadDocument, arc_angle_tolerance: float) -
 def _snap_line_endpoints(lines: list[tuple[tuple[float, float], tuple[float, float], str | None]], gap_tolerance: float):
     if gap_tolerance <= 0:
         return lines, []
-    endpoints = [(point, index) for index, (start, end, _) in enumerate(lines) for point in (start, end)]
-    clusters: list[list[tuple[tuple[float, float], int]]] = []
-    for point, line_index in sorted(endpoints, key=lambda item: (item[0][0], item[0][1], item[1])):
+    endpoints = [
+        (point, line_index, side, handle)
+        for line_index, (start, end, handle) in enumerate(lines)
+        for side, point in (("start", start), ("end", end))
+    ]
+    clusters: list[list[tuple[tuple[float, float], int, str, str | None]]] = []
+    for endpoint in sorted(endpoints, key=lambda item: (item[0][0], item[0][1], item[1], item[2])):
+        point, line_index, _, _ = endpoint
         cluster = next(
             (candidate for candidate in clusters if all(
                 math.hypot(point[0] - other[0], point[1] - other[1]) <= gap_tolerance
                 and line_index != other_line
-                for other, other_line in candidate
+                for other, other_line, _, _ in candidate
             )),
             None,
         )
         if cluster is None:
-            clusters.append([(point, line_index)])
+            clusters.append([endpoint])
         else:
-            cluster.append((point, line_index))
-    snapped: dict[tuple[float, float], tuple[float, float]] = {
-        point: (
-            sum(item[0][0] for item in cluster) / len(cluster),
-            sum(item[0][1] for item in cluster) / len(cluster),
+            cluster.append(endpoint)
+
+    # Prefer an existing coordinate that is already shared by the most endpoints.
+    # This keeps a precise corner fixed when one nearby endpoint is noisy.
+    targets: dict[tuple[int, str], tuple[float, float]] = {
+        (line_index, side): min(
+            (point for point, _, _, _ in cluster),
+            key=lambda candidate: (
+                -Counter(item[0] for item in cluster)[candidate],
+                candidate[0],
+                candidate[1],
+            ),
         )
         for cluster in clusters
-        for point, _ in cluster
+        for point, line_index, side, _ in cluster
     }
-    diagnostics = [
-        {"original": point, "snapped_to": target, "distance": math.hypot(point[0] - target[0], point[1] - target[1])}
-        for point, target in snapped.items()
-        if point != target
-    ]
-    if gap_tolerance > 0:
-        for index, (point, line_index) in enumerate(endpoints):
-            nearest = min(
-                (math.hypot(point[0] - other[0], point[1] - other[1]) for j, (other, other_line) in enumerate(endpoints) if j != index and other_line != line_index),
-                default=None,
+    diagnostics = []
+    for point, line_index, side, handle in endpoints:
+        target = targets[(line_index, side)]
+        distance = math.hypot(point[0] - target[0], point[1] - target[1])
+        if distance > 0:
+            diagnostics.append(
+                {
+                    "type": "snapped_endpoint",
+                    "original": point,
+                    "snapped_to": target,
+                    "distance": distance,
+                    "handle": handle,
+                    "endpoint": side,
+                }
             )
-            if nearest is not None and gap_tolerance < nearest <= gap_tolerance * 10:
-                diagnostics.append({"type": "unresolved_gap", "endpoint": point, "distance": nearest})
-    return [(snapped[start], snapped[end], handle) for start, end, handle in lines], diagnostics
+
+    points = [Point(point) for point, _, _, _ in endpoints]
+    tree = STRtree(points)
+    max_x = max(point[0] for point, _, _, _ in endpoints)
+    min_x = min(point[0] for point, _, _, _ in endpoints)
+    max_y = max(point[1] for point, _, _, _ in endpoints)
+    min_y = min(point[1] for point, _, _, _ in endpoints)
+    search_limit = math.hypot(max_x - min_x, max_y - min_y) + gap_tolerance
+    unresolved_pairs: dict[tuple[int, int], tuple[int, int, float]] = {}
+    for index, (point, line_index, _, _) in enumerate(endpoints):
+        radius = gap_tolerance
+        candidates: list[int] = []
+        while not candidates and radius <= search_limit:
+            candidates = [
+                int(candidate)
+                for candidate in tree.query(points[index], predicate="dwithin", distance=radius)
+                if int(candidate) != index and endpoints[int(candidate)][1] != line_index
+            ]
+            radius = max(radius * 2.0, 1e-9)
+        if not candidates:
+            continue
+        nearest_index = min(
+            candidates,
+            key=lambda candidate: points[index].distance(points[candidate]),
+        )
+        distance = points[index].distance(points[nearest_index])
+        if distance <= gap_tolerance:
+            continue
+        pair = tuple(sorted((index, nearest_index)))
+        unresolved_pairs[pair] = (pair[0], pair[1], distance)
+
+    for first, second, distance in unresolved_pairs.values():
+        first_point, _, _, first_handle = endpoints[first]
+        second_point, _, _, second_handle = endpoints[second]
+        diagnostics.append(
+            {
+                "type": "unresolved_gap",
+                "endpoint": first_point,
+                "other_endpoint": second_point,
+                "distance": distance,
+                "handle": first_handle,
+                "other_handle": second_handle,
+            }
+        )
+
+    snapped_lines = [
+        (targets[(line_index, "start")], targets[(line_index, "end")], handle)
+        for line_index, (_, _, handle) in enumerate(lines)
+    ]
+    return snapped_lines, diagnostics
 
 
 def _line_polygon_spaces(document: CadDocument, starting_index: int, tolerance: float, gap_tolerance: float) -> list[RoomSpace]:
@@ -168,6 +233,11 @@ def _line_polygon_spaces(document: CadDocument, starting_index: int, tolerance: 
         if start and end and start != end:
             raw_lines.append((start, end, entity.handle))
     snapped_lines, diagnostics = _snap_line_endpoints(raw_lines, gap_tolerance)
+    snapped_handles = {
+        item["handle"]
+        for item in diagnostics
+        if item.get("type") == "snapped_endpoint" and item.get("handle")
+    }
     for start, end, handle in snapped_lines:
             if start == end:
                 diagnostics.append({"type": "collapsed_line", "start": start, "end": end, "handle": handle})
@@ -199,13 +269,17 @@ def _line_polygon_spaces(document: CadDocument, starting_index: int, tolerance: 
                 area=area,
                 perimeter=perimeter,
                 source="wall_lines",
-                status="NEEDS_REVIEW",
+                status="SNAPPED" if snapped_handles.intersection(handles) else "NEEDS_REVIEW",
                 boundary_handles=handles,
                 unit_status="VERIFIED" if scale is not None else "UNIT_UNKNOWN",
                 raw_area=raw_area,
                 raw_perimeter=raw_perimeter,
                 drawing_units=document.units,
-                geometry_diagnostic=None,
+                geometry_diagnostic=(
+                    "SNAPPED: " + ", ".join(sorted(snapped_handles.intersection(handles)))
+                    if snapped_handles.intersection(handles)
+                    else None
+                ),
             )
         )
     return rooms, diagnostics

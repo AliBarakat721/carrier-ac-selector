@@ -5,7 +5,7 @@ import ezdxf
 import pytest
 
 from cad.dxf_reader import read_dxf
-from cad.space_detector import detect_spaces
+from cad.space_detector import _snap_line_endpoints, detect_spaces
 
 
 def make_sample_dxf(path: Path) -> None:
@@ -173,7 +173,27 @@ def test_gap_snapping_reports_moved_endpoints(tmp_path):
 
     assert rooms
     assert diagnostics
-    assert diagnostics[0]["distance"] == pytest.approx(0.001)
+    snapped = [item for item in diagnostics if item["type"] == "snapped_endpoint"]
+    assert snapped[0]["distance"] == pytest.approx(0.002)
+    assert snapped[0]["snapped_to"] == (5.0, 0.0)
+    assert snapped[0]["handle"]
+    assert any(room.status == "SNAPPED" for room in rooms)
+    assert any(room.geometry_diagnostic and snapped[0]["handle"] in room.geometry_diagnostic for room in rooms)
+
+
+def test_unresolved_gaps_are_unique_and_include_gaps_larger_than_ten_times_tolerance():
+    _, diagnostics = _snap_line_endpoints(
+        [((0.0, 0.0), (1.0, 0.0), "A"), ((3.0, 0.0), (4.0, 0.0), "B")],
+        0.1,
+    )
+
+    gaps = [item for item in diagnostics if item["type"] == "unresolved_gap"]
+    pairs = {
+        frozenset((item["endpoint"], item["other_endpoint"]))
+        for item in gaps
+    }
+    assert len(pairs) == len(gaps)
+    assert any(item["distance"] > 1.0 for item in gaps)
 
 
 def test_missing_dxf_is_reported():

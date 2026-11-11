@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import Any, Mapping
-import math
 import logging
 
 from .tag_config import TAG_CONFIG, tag_block_name, tag_fields
@@ -130,16 +129,11 @@ def synchronize_attributes(block_reference: Any, tag_type: str, attributes: Mapp
         for field in attributes
         if field in tag_fields(tag_type)
     }
-    scale_x = float(getattr(block_reference.dxf, "xscale", 1.0))
     scale_y = float(getattr(block_reference.dxf, "yscale", 1.0))
-    rotation = math.radians(float(getattr(block_reference.dxf, "rotation", 0.0)))
-    cos_r, sin_r = math.cos(rotation), math.sin(rotation)
-    origin = block_reference.dxf.insert
-    base_point = getattr(block.dxf, "base_point", (0.0, 0.0, 0.0))
+    transformation = block_reference.matrix44()
 
     def wcs_insert(point):
-        x, y = (float(point[0]) - float(base_point[0])) * scale_x, (float(point[1]) - float(base_point[1])) * scale_y
-        return (origin.x + x * cos_r - y * sin_r, origin.y + x * sin_r + y * cos_r)
+        return transformation.transform(point)
 
     for attdef in block.query("ATTDEF"):
         tag = attdef.dxf.tag
@@ -151,7 +145,7 @@ def synchronize_attributes(block_reference: Any, tag_type: str, attributes: Mapp
             if "height" in dxfattribs:
                 dxfattribs["height"] = float(dxfattribs["height"]) * abs(scale_y)
             if attdef.dxf.hasattr("rotation"):
-                dxfattribs["rotation"] = float(attdef.dxf.rotation) + math.degrees(rotation)
+                dxfattribs["rotation"] = float(attdef.dxf.rotation) + float(getattr(block_reference.dxf, "rotation", 0.0))
             block_reference.add_attrib(tag, values.get(tag, ""), insert=wcs_insert(attdef.dxf.insert), dxfattribs=dxfattribs)
     for attribute in block_reference.attribs:
         if hasattr(attribute, "dxf") and attribute.dxf.tag in values:

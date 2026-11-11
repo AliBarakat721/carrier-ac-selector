@@ -120,26 +120,27 @@ def _snap_line_endpoints(lines: list[tuple[tuple[float, float], tuple[float, flo
     if gap_tolerance <= 0:
         return lines, []
     endpoints = [(point, index) for index, (start, end, _) in enumerate(lines) for point in (start, end)]
-    clusters: list[list[tuple[float, float]]] = []
-    for point, _ in sorted(endpoints, key=lambda item: (item[0][0], item[0][1], item[1])):
+    clusters: list[list[tuple[tuple[float, float], int]]] = []
+    for point, line_index in sorted(endpoints, key=lambda item: (item[0][0], item[0][1], item[1])):
         cluster = next(
             (candidate for candidate in clusters if all(
                 math.hypot(point[0] - other[0], point[1] - other[1]) <= gap_tolerance
-                for other in candidate
+                and line_index != other_line
+                for other, other_line in candidate
             )),
             None,
         )
         if cluster is None:
-            clusters.append([point])
+            clusters.append([(point, line_index)])
         else:
-            cluster.append(point)
+            cluster.append((point, line_index))
     snapped: dict[tuple[float, float], tuple[float, float]] = {
         point: (
-            sum(item[0] for item in cluster) / len(cluster),
-            sum(item[1] for item in cluster) / len(cluster),
+            sum(item[0][0] for item in cluster) / len(cluster),
+            sum(item[0][1] for item in cluster) / len(cluster),
         )
         for cluster in clusters
-        for point in cluster
+        for point, _ in cluster
     }
     diagnostics = [
         {"original": point, "snapped_to": target, "distance": math.hypot(point[0] - target[0], point[1] - target[1])}
@@ -169,6 +170,7 @@ def _line_polygon_spaces(document: CadDocument, starting_index: int, tolerance: 
     snapped_lines, diagnostics = _snap_line_endpoints(raw_lines, gap_tolerance)
     for start, end, handle in snapped_lines:
             if start == end:
+                diagnostics.append({"type": "collapsed_line", "start": start, "end": end, "handle": handle})
                 continue
             line = LineString([start, end])
             lines.append(line)

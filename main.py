@@ -1753,7 +1753,7 @@ class HAPToCarrierApp(QMainWindow):
         self.cad_diagnostics = diagnostics
         self.cad_room_systems = suggest_room_assignments(rooms, self.systems)
         self._render_cad_rooms()
-        self._set_status(f"✅ {Path(path).suffix[1:].upper()} loaded — {len(rooms)} room(s) detected.")
+        self._set_status(f"✅ {os.path.splitext(path)[1][1:].upper()} loaded — {len(rooms)} room(s) detected.")
 
     def _cad_system_names(self):
         names = []

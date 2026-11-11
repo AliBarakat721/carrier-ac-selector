@@ -122,6 +122,26 @@ def _entity_data(entity: DXFGraphic) -> dict[str, Any]:
             "bulges": [float(vertex.dxf.get("bulge", 0.0) or 0.0) for vertex in entity.vertices],
             "closed": bool(entity.is_closed),
         }
+    if kind == "ARC":
+        return {
+            "center": _point(entity.dxf.center),
+            "radius": float(entity.dxf.radius),
+            "start_angle": float(entity.dxf.start_angle),
+            "end_angle": float(entity.dxf.end_angle),
+        }
+    if kind == "CIRCLE":
+        return {
+            "center": _point(entity.dxf.center),
+            "radius": float(entity.dxf.radius),
+        }
+    if kind == "SPLINE":
+        # Keep the reader independent of ezdxf entity classes by storing a
+        # deterministic polyline approximation for downstream polygonizing.
+        points = list(entity.flattening(0.01))
+        return {
+            "points": [_point(point) for point in points],
+            "closed": bool(entity.dxf.get("flags", 0) & 1),
+        }
     if kind in {"TEXT", "MTEXT"}:
         return {
             "text": entity.plain_text() if kind == "MTEXT" else str(entity.dxf.text),

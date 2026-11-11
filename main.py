@@ -39,7 +39,7 @@ import core
 import ocr_engine
 import updater
 from cad.dxf_exporter import export_hvac_dxf
-from cad.dxf_reader import read_dxf
+from cad.importer import read_cad_file
 from cad.space_detector import detect_spaces
 from cad.workflow import RoomAssignment, build_indoor_placements, suggest_room_assignments
 from version import APP_VERSION
@@ -1674,16 +1674,20 @@ class HAPToCarrierApp(QMainWindow):
         layout.setSpacing(6)
 
         intro = QLabel(
-            "ارفع ملف DXF ثم ارفع تقرير HAP من زر HAP المعتاد. "
+            "ارفع ملف DWG أو DXF ثم ارفع تقرير HAP من زر HAP المعتاد. "
             "بعد اختيار الوحدات من Results/Systems، اربط كل Room بالـ HAP System "
             "واضغط Export Indoor Units."
         )
         intro.setWordWrap(True)
         intro.setStyleSheet("color: #93c5fd; padding: 4px;")
+        intro.setToolTip(
+            "DWG files are converted temporarily to DXF using ODA File Converter. "
+            "The original drawing is never overwritten."
+        )
         layout.addWidget(intro)
 
         buttons = QHBoxLayout()
-        self.btn_cad_upload = QPushButton("📐  Upload DXF")
+        self.btn_cad_upload = QPushButton("📐  Upload DWG / DXF")
         self.btn_cad_upload.setObjectName("btn_pick")
         self.btn_cad_upload.clicked.connect(self.upload_cad)
         buttons.addWidget(self.btn_cad_upload)
@@ -1695,7 +1699,7 @@ class HAPToCarrierApp(QMainWindow):
         buttons.addStretch()
         layout.addLayout(buttons)
 
-        self.lbl_cad_status = QLabel("No DXF loaded — upload a floor plan to begin.")
+        self.lbl_cad_status = QLabel("No CAD file loaded — upload a DWG or DXF floor plan to begin.")
         self.lbl_cad_status.setWordWrap(True)
         self.lbl_cad_status.setStyleSheet("color: #6b7280; padding: 2px 4px;")
         layout.addWidget(self.lbl_cad_status)
@@ -1725,14 +1729,14 @@ class HAPToCarrierApp(QMainWindow):
 
     def upload_cad(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select CAD Floor Plan", "", "DXF Files (*.dxf *.DXF);;All Files (*)"
+            self, "Select CAD Floor Plan", "", "CAD Files (*.dwg *.DWG *.dxf *.DXF);;DWG Files (*.dwg *.DWG);;DXF Files (*.dxf *.DXF);;All Files (*)"
         )
         if path:
             self._load_cad(path)
 
     def _load_cad(self, path: str):
         try:
-            document = read_dxf(path)
+            document = read_cad_file(path)
             diagnostics = []
             rooms = detect_spaces(document, diagnostics=diagnostics)
         except Exception as exc:
@@ -1749,7 +1753,7 @@ class HAPToCarrierApp(QMainWindow):
         self.cad_diagnostics = diagnostics
         self.cad_room_systems = suggest_room_assignments(rooms, self.systems)
         self._render_cad_rooms()
-        self._set_status(f"✅ DXF loaded — {len(rooms)} room(s) detected.")
+        self._set_status(f"✅ {Path(path).suffix[1:].upper()} loaded — {len(rooms)} room(s) detected.")
 
     def _cad_system_names(self):
         names = []
@@ -1826,7 +1830,7 @@ class HAPToCarrierApp(QMainWindow):
 
     def export_cad_workflow(self):
         if not self.cad_source_path:
-            QMessageBox.information(self, "No DXF", "Upload a DXF floor plan first.")
+            QMessageBox.information(self, "No CAD File", "Upload a DWG or DXF floor plan first.")
             return
         assignments = [
             RoomAssignment(room.room_id, self.cad_room_systems.get(room.room_id, ""))

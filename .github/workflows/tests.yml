@@ -31,8 +31,15 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
       - name: Verify runtime dependency imports
         run: python -c "import PySide6, pandas, openpyxl, pytesseract, PIL, docx, pymupdf"
-      - name: Compile Python modules
+      - name: Compile Python modules (Linux)
+        if: runner.os == 'Linux'
         run: python -m py_compile core.py main.py electrical_engine.py ocr_engine.py roi_tab.py updater.py version.py cad/*.py
+      - name: Compile Python modules (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Path cad -Filter *.py | ForEach-Object { $_.FullName }
+          python -m py_compile core.py main.py electrical_engine.py ocr_engine.py roi_tab.py updater.py version.py $files
       - name: Validate PowerShell updater syntax
         if: runner.os == 'Windows'
         shell: pwsh

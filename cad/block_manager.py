@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 import math
+import logging
 
 from .tag_config import TAG_CONFIG, tag_block_name, tag_fields
+
+logger = logging.getLogger(__name__)
 
 
 BLOCK_TYPES = ("indoor_unit", "outdoor_unit", "pipe_label", "room_label")
@@ -107,13 +110,21 @@ def synchronize_attributes(block_reference: Any, tag_type: str, attributes: Mapp
 
     _validate_attributes(tag_type, attributes)
     existing: set[str] = set()
+    duplicate_tags: list[str] = []
     for attribute in list(block_reference.attribs):
         tag = attribute.dxf.tag
         if tag in existing:
             attribute.destroy()
+            duplicate_tags.append(tag)
         else:
             existing.add(tag)
     block = block_reference.doc.blocks[block_reference.dxf.name]
+    if duplicate_tags:
+        logger.warning(
+            "Removed duplicate ATTRIB tags %s from INSERT %s; first value was retained",
+            sorted(set(duplicate_tags)),
+            block_reference.dxf.handle,
+        )
     values = {
         field: "" if attributes.get(field) is None else str(attributes.get(field))
         for field in attributes
@@ -124,18 +135,23 @@ def synchronize_attributes(block_reference: Any, tag_type: str, attributes: Mapp
     rotation = math.radians(float(getattr(block_reference.dxf, "rotation", 0.0)))
     cos_r, sin_r = math.cos(rotation), math.sin(rotation)
     origin = block_reference.dxf.insert
+    base_point = getattr(block.dxf, "base_point", (0.0, 0.0, 0.0))
 
     def wcs_insert(point):
-        x, y = float(point[0]) * scale_x, float(point[1]) * scale_y
+        x, y = (float(point[0]) - float(base_point[0])) * scale_x, (float(point[1]) - float(base_point[1])) * scale_y
         return (origin.x + x * cos_r - y * sin_r, origin.y + x * sin_r + y * cos_r)
 
     for attdef in block.query("ATTDEF"):
         tag = attdef.dxf.tag
         if tag not in existing:
             dxfattribs = {}
-            for name in ("height", "layer", "color"):
+            for name in ("height", "layer", "color", "style", "halign", "valign"):
                 if attdef.dxf.hasattr(name):
                     dxfattribs[name] = attdef.dxf.get(name)
+            if "height" in dxfattribs:
+                dxfattribs["height"] = float(dxfattribs["height"]) * abs(scale_y)
+            if attdef.dxf.hasattr("rotation"):
+                dxfattribs["rotation"] = float(attdef.dxf.rotation) + math.degrees(rotation)
             block_reference.add_attrib(tag, values.get(tag, ""), insert=wcs_insert(attdef.dxf.insert), dxfattribs=dxfattribs)
     for attribute in block_reference.attribs:
         if hasattr(attribute, "dxf") and attribute.dxf.tag in values:

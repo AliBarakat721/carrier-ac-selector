@@ -173,7 +173,7 @@ def test_gap_snapping_reports_moved_endpoints(tmp_path):
 
     assert rooms
     assert diagnostics
-    assert diagnostics[0]["distance"] == pytest.approx(0.002)
+    assert diagnostics[0]["distance"] == pytest.approx(0.001)
 
 
 def test_missing_dxf_is_reported():

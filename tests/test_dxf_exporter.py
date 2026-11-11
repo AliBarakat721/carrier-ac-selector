@@ -205,6 +205,32 @@ def test_export_restores_existing_outputs_when_schedule_replace_fails(tmp_path, 
     assert schedule.read_bytes() == old_schedule
 
 
+def test_export_retains_backups_when_rollback_itself_fails(tmp_path, monkeypatch):
+    source = tmp_path / "source.dxf"
+    output = tmp_path / "hvac-output.dxf"
+    schedule = tmp_path / "equipment.csv"
+    make_source(source)
+    export_hvac_dxf(source, output, indoor_units=[indoor()], outdoor_units=[outdoor()], relationships=[], schedule_path=schedule)
+    import cad.dxf_exporter as exporter
+    original_replace = exporter.os.replace
+    calls = {"count": 0}
+
+    def fail_replacement_and_restore(src, dst):
+        calls["count"] += 1
+        if calls["count"] in {2, 3}:
+            raise OSError("injected replacement/rollback failure")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(exporter.os, "replace", fail_replacement_and_restore)
+    with pytest.raises(RuntimeError, match="recovery backups retained at"):
+        export_hvac_dxf(source, output, indoor_units=[indoor()], outdoor_units=[outdoor()], relationships=[], schedule_path=schedule)
+
+    backups = list(tmp_path.glob("*.backup"))
+    assert backups
+    for backup in backups:
+        backup.unlink()
+
+
 def test_unitless_room_export_does_not_label_raw_metrics_as_metric(tmp_path):
     source = tmp_path / "source.dxf"
     output = tmp_path / "hvac-output.dxf"

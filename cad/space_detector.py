@@ -119,20 +119,37 @@ def _closed_polyline_spaces(document: CadDocument, arc_angle_tolerance: float) -
 def _snap_line_endpoints(lines: list[tuple[tuple[float, float], tuple[float, float], str | None]], gap_tolerance: float):
     if gap_tolerance <= 0:
         return lines, []
-    endpoints = [point for start, end, _ in lines for point in (start, end)]
-    snapped: dict[tuple[float, float], tuple[float, float]] = {}
-    for point in endpoints:
-        target = next((other for other in snapped.values() if math.hypot(point[0] - other[0], point[1] - other[1]) <= gap_tolerance), None)
-        snapped[point] = target or point
+    endpoints = [(point, index) for index, (start, end, _) in enumerate(lines) for point in (start, end)]
+    clusters: list[list[tuple[float, float]]] = []
+    for point, _ in sorted(endpoints, key=lambda item: (item[0][0], item[0][1], item[1])):
+        cluster = next(
+            (candidate for candidate in clusters if all(
+                math.hypot(point[0] - other[0], point[1] - other[1]) <= gap_tolerance
+                for other in candidate
+            )),
+            None,
+        )
+        if cluster is None:
+            clusters.append([point])
+        else:
+            cluster.append(point)
+    snapped: dict[tuple[float, float], tuple[float, float]] = {
+        point: (
+            sum(item[0] for item in cluster) / len(cluster),
+            sum(item[1] for item in cluster) / len(cluster),
+        )
+        for cluster in clusters
+        for point in cluster
+    }
     diagnostics = [
         {"original": point, "snapped_to": target, "distance": math.hypot(point[0] - target[0], point[1] - target[1])}
         for point, target in snapped.items()
         if point != target
     ]
     if gap_tolerance > 0:
-        for index, point in enumerate(endpoints):
+        for index, (point, line_index) in enumerate(endpoints):
             nearest = min(
-                (math.hypot(point[0] - other[0], point[1] - other[1]) for j, other in enumerate(endpoints) if j != index),
+                (math.hypot(point[0] - other[0], point[1] - other[1]) for j, (other, other_line) in enumerate(endpoints) if j != index and other_line != line_index),
                 default=None,
             )
             if nearest is not None and gap_tolerance < nearest <= gap_tolerance * 10:

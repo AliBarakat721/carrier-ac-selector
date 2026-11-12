@@ -74,6 +74,49 @@ def test_thermal_validation_exposes_difference_and_warning():
     assert "10000" in room.thermal_validation.message
 
 
+def test_thermal_warning_preserves_required_loads_but_marks_legacy_result_not_ok():
+    result = core.parse_hap_text(
+        "Room Number: 1\nRoom Name: Office\n"
+        "Total cooling load: 100 MBH\n"
+        "Sensible cooling load: 60 MBH\n"
+        "Latent cooling load: 30 MBH\n"
+        "Supply Air 100 CFM\n",
+        source_file="warning.pdf",
+    )
+    assert result.has_required_loads
+    assert result.btu == pytest.approx(100000)
+    assert result.cfm == pytest.approx(100)
+    assert result.warnings
+    assert not result.ok
+    assert result.source.source_file == "warning.pdf"
+
+
+def test_multiple_rooms_remain_independent_and_legacy_result_is_not_a_sum():
+    text = (
+        _room_report().replace("101", "1", 1)
+        + "\n"
+        + _room_report(total="200 MBH", sensible="120 MBH", latent="80 MBH")
+        .replace("101", "2", 1)
+    )
+    rooms = core.parse_hap_rooms(text, source_file="rooms.pdf")
+    legacy = core.parse_hap_text(text, source_file="rooms.pdf")
+    assert [room.total_cooling_load.value for room in rooms] == [100000, 200000]
+    assert legacy.btu == 100000
+    assert legacy.btu != sum(room.total_cooling_load.value for room in rooms)
+
+
+def test_system_results_keep_source_file():
+    text = (
+        "Air System Sizing Summary for G01\n"
+        "Central Cooling Coil\n"
+        "Total coil load 100 MBH 8.33 Tons\n"
+        "Coil CFM at Design 2000 CFM\n"
+    )
+    systems = core.parse_all_systems(text, source_file="systems.pdf")
+    assert len(systems) == 1
+    assert systems[0].source.source_file == "systems.pdf"
+
+
 def test_missing_values_are_explicit_not_verified():
     room = core.parse_hap_rooms(
         "Room Number: 7\nRoom Name: Store\nTotal cooling load: 20 MBH\n",

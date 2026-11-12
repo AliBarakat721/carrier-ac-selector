@@ -1746,11 +1746,14 @@ class HAPToCarrierApp(QMainWindow):
 
         self.ocr_worker = OCRWorker(path)
         self.ocr_worker.progress.connect(self.progress_bar.setValue)
-        self.ocr_worker.done.connect(lambda result, token=job_id: self._on_ocr_done(result, token))
+        self.ocr_worker.done.connect(
+            lambda result, token=job_id, source_path=path:
+                self._on_ocr_done(result, token, source_path)
+        )
         self.ocr_worker.error.connect(lambda message, token=job_id: self._on_ocr_error(message, token))
         self.ocr_worker.start()
 
-    def _on_ocr_done(self, text: str, job_id=None):
+    def _on_ocr_done(self, text: str, job_id=None, source_file=None):
         if job_id is not None and job_id != getattr(self, "_ocr_job_id", 0):
             return
         self.txt_debug.setPlainText(text)
@@ -1759,11 +1762,11 @@ class HAPToCarrierApp(QMainWindow):
         self.btn_upload.setEnabled(True)
         self.btn_upload.setText("📁  Upload HAP Report")
 
-        res = core.parse_hap_text(text)
+        res = core.parse_hap_text(text, source_file=source_file)
         btu, cfm = res.btu, res.cfm
 
         # Batch: detect every system in this report (may be just one)
-        self.systems = core.parse_all_systems(text)
+        self.systems = core.parse_all_systems(text, source_file=source_file)
         self._render_batch()
         self._refresh_cad_workflow()
         # Single-system report → remember its name for export defaults

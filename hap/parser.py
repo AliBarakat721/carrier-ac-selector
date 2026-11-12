@@ -77,6 +77,11 @@ class HapRoom:
 
 @dataclass
 class HapResult:
+    """Legacy single-result view of a HAP text report.
+
+    For reports containing multiple rooms, use :func:`parse_hap_rooms` rather
+    than treating ``btu``/``cfm`` as a sum of room loads.
+    """
     # Legacy fields retained for existing selection/UI callers.
     btu: float = 0.0
     cfm: float = 0.0
@@ -89,6 +94,11 @@ class HapResult:
     @property
     def ok(self) -> bool:
         return self.btu > 0 and self.cfm > 0 and not self.warnings
+
+    @property
+    def has_required_loads(self) -> bool:
+        """Whether BTU and CFM were extracted, regardless of warnings."""
+        return self.btu > 0 and self.cfm > 0
 
 
 _NUM = r'(?<!\d)(?<!\d\.)(\d+(?:[.,]\d+)?)'
@@ -281,6 +291,7 @@ class SystemLoad:
     cfm: float = 0.0
     sensible_btu: float = 0.0
     warnings: list = field(default_factory=list)
+    source: SourceRef = field(default_factory=SourceRef)
 
     @property
     def ok(self) -> bool:
@@ -318,7 +329,7 @@ _SYSTEM_SUMMARY_HEADER_LENIENT = re.compile(
     re.I)
 
 
-def parse_all_systems(text: str) -> list:
+def parse_all_systems(text: str, *, source_file: str | None = None) -> list:
     """Parse EVERY air system in a full HAP "Systems Design Report".
 
     The header 'Air System Sizing Summary for <name>' repeats once per
@@ -350,8 +361,10 @@ def parse_all_systems(text: str) -> list:
         end = matches[i + 1].start() if i + 1 < len(matches) else len(t)
         chunk = t[m.start():end]
 
-        r = parse_hap_text(chunk)
-        load = SystemLoad(name, r.btu, r.cfm, r.sensible_btu, r.warnings)
+        r = parse_hap_text(chunk, source_file=source_file)
+        load = SystemLoad(
+            name, r.btu, r.cfm, r.sensible_btu, r.warnings, r.source
+        )
 
         prev = by_name.get(name)
         if prev is None:
@@ -366,6 +379,7 @@ def parse_all_systems(text: str) -> list:
                 sensible_btu=(load.sensible_btu if load.sensible_btu > 0
                               else prev.sensible_btu),
                 warnings=list(dict.fromkeys(prev.warnings + load.warnings)),
+                source=load.source if load.btu > 0 or load.cfm > 0 else prev.source,
             )
             idx = next(j for j, item in enumerate(systems) if item.name == name)
             systems[idx] = merged

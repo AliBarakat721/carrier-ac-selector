@@ -30,47 +30,8 @@ if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed." }
 & $venvPython -m pip install -r requirements-dev.txt
 if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
 
-# Create a Windows desktop shortcut that launches the GUI without a console window.
-$pythonw = Join-Path $PSScriptRoot ".venv\Scripts\pythonw.exe"
-if (-not (Test-Path $pythonw)) {
-    Write-Warning "pythonw.exe was not found. The application was installed, but the desktop shortcut was not created."
-    $pythonw = $null
-}
-
-$desktop = [Environment]::GetFolderPath("DesktopDirectory")
-$shortcutPath = $null
-if ($pythonw -and -not [string]::IsNullOrWhiteSpace($desktop) -and (Test-Path $desktop)) {
-    $shortcutPath = Join-Path $desktop "Carrier AC Selector.lnk"
-    try {
-        $shell = New-Object -ComObject WScript.Shell
-        $shortcut = $shell.CreateShortcut($shortcutPath)
-        $shortcut.TargetPath = $pythonw
-        $shortcut.Arguments = '"main.py"'
-        $shortcut.WorkingDirectory = $PSScriptRoot
-        $shortcut.Description = "Launch Carrier AC Selector"
-        $shortcut.IconLocation = "$pythonw,0"
-        $shortcut.Save()
-    } catch {
-        Write-Warning "The application was installed, but the desktop shortcut could not be created: $($_.Exception.Message)"
-        $shortcutPath = $null
-    }
-} else {
-    Write-Warning "The application was installed, but the current user's Desktop folder could not be located."
-}
-
-# This marker is written only after dependency installation completes. The launcher
-# uses it to distinguish a complete setup from a partially-created virtualenv.
-$setupMarker = Join-Path $PSScriptRoot ".venv\.carrier_setup_complete"
-Set-Content -Path $setupMarker -Value "Carrier AC Selector setup completed on $(Get-Date -Format o)" -Encoding UTF8
-
 Write-Host ""
-Write-Host "Setup complete."
-if ($shortcutPath) {
-    Write-Host "Desktop shortcut created: $shortcutPath"
-    Write-Host "Double-click 'Carrier AC Selector' on your Desktop to launch the application."
-} else {
-    Write-Host "The application can be started with .\run.ps1 or Start_Carrier.bat."
-}
+Write-Host "Setup complete. Run the application with .\run.ps1"
 Write-Host "Run tests with .\test.ps1"
 if (-not (Get-Command tesseract -ErrorAction SilentlyContinue)) {
     Write-Warning "Tesseract is not on PATH. Image and scanned-PDF OCR will be unavailable until Tesseract is installed."

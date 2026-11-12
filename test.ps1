@@ -10,7 +10,7 @@ $env:QT_QPA_PLATFORM = "offscreen"
 & $venvPython -m pytest -q
 if ($LASTEXITCODE -ne 0) { throw "pytest failed." }
 
-& $venvPython -m py_compile core.py main.py electrical_engine.py ocr_engine.py roi_tab.py updater.py version.py
+& $venvPython -m py_compile core.py main.py electrical_engine.py ocr_engine.py roi_tab.py
 if ($LASTEXITCODE -ne 0) { throw "Python compilation check failed." }
 
 Write-Host "All tests and syntax checks passed."

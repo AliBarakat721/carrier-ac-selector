@@ -46,13 +46,24 @@ function Test-UpdateArchive([string]$ZipPath) {
         "requirements.txt", "requirements-dev.txt", "README.md"
     )
     $allowedData = @("Carrier_AC_Database.xlsx", "Carrier_AC_Database.csv")
-    $allowedCad = @(
-        "__init__.py", "block_manager.py", "dxf_exporter.py", "dxf_reader.py",
-        "importer.py", "layer_manager.py", "schedule_builder.py",
-        "space_detector.py", "tag_config.py", "workflow.py"
-    )
+    # Package directories are allow-listed file-by-file. core.py imports the Phase 1
+    # packages (engineering, equipment, hap, reports, ui), so all of them are required.
+    $allowedPackages = @{
+        "cad" = @(
+            "__init__.py", "block_manager.py", "dxf_exporter.py", "dxf_reader.py",
+            "importer.py", "layer_manager.py", "schedule_builder.py",
+            "space_detector.py", "tag_config.py", "workflow.py"
+        )
+        "engineering" = @("__init__.py", "units.py")
+        "equipment" = @("__init__.py", "best_pick.py", "catalog_reader.py", "indoor_selector.py")
+        "hap" = @("__init__.py", "parser.py")
+        "reports" = @("__init__.py", "electrical_report.py", "excel_export.py", "export_frames.py", "file_io.py")
+        "ui" = @("__init__.py", "layout.py")
+    }
     $required = @("main.py", "core.py", "requirements.txt", "updater.py", "version.py", "apply_update.ps1")
-    $required += $allowedCad | ForEach-Object { "cad/$_" }
+    foreach ($package in $allowedPackages.Keys) {
+        foreach ($name in $allowedPackages[$package]) { $required += "$package/$name" }
+    }
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     $found = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     $total = [int64]0
@@ -81,7 +92,7 @@ function Test-UpdateArchive([string]$ZipPath) {
                 throw "Links and special files are not allowed: $raw"
             }
             if ($isDirectory) {
-                if ($clean -notin @('data', 'cad')) { throw "Unexpected directory in update archive: $raw" }
+                if ($clean -notin (@('data') + @($allowedPackages.Keys))) { throw "Unexpected directory in update archive: $raw" }
                 continue
             }
 
@@ -89,7 +100,7 @@ function Test-UpdateArchive([string]$ZipPath) {
                 [void]$found.Add($parts[0])
             } elseif ($parts.Count -eq 2 -and $parts[0] -eq 'data' -and $allowedData -contains $parts[1]) {
                 # The user database is preserved by the installer below.
-            } elseif ($parts.Count -eq 2 -and $parts[0] -eq 'cad' -and $allowedCad -contains $parts[1]) {
+            } elseif ($parts.Count -eq 2 -and $allowedPackages.ContainsKey($parts[0]) -and $allowedPackages[$parts[0]] -contains $parts[1]) {
                 [void]$found.Add(($parts -join '/'))
             } else {
                 throw "Unexpected file in update archive: $raw"

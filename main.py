@@ -31,9 +31,6 @@ import os
 import re
 import logging
 import webbrowser
-import errno
-import tempfile
-from contextlib import contextmanager
 import pandas as pd
 import core
 import ocr_engine
@@ -43,89 +40,35 @@ from cad.importer import read_cad_file
 from cad.space_detector import detect_spaces
 from cad.workflow import RoomAssignment, build_indoor_placements, suggest_room_assignments
 from version import APP_VERSION
+from ui.layout import (  # noqa: F401  (moved out of main in Phase 1)
+    _RESULTS_TABLE_BASE_COLUMNS,
+    _RESULTS_TABLE_COLUMNS,
+    _RESULTS_TABLE_COLUMN_ORDER,
+    _reorder_results_table_cells,
+    _window_sizes_for_available_geometry,
+)
+from reports.file_io import (  # noqa: F401
+    atomic_export as _atomic_export,
+    default_export_name,
+    export_error_message as _export_error_message,
+    normalize_save_path,
+    replace_export_extension as _replace_export_extension,
+)
+from reports.excel_export import style_excel_file as _style_excel_file  # noqa: F401
+from reports.electrical_report import (  # noqa: F401
+    append_electrical_section_to_docx,
+    append_electrical_sheet_to_excel,
+)
+from reports.export_frames import prepare_cart_export_df, prepare_export_df
+from equipment.best_pick import best_overall_index, pick_best
+
 import math
 
 logger = logging.getLogger(__name__)
 
 
-# Keep the data-building order separate from the user-facing Results layout.
-_RESULTS_TABLE_BASE_COLUMNS = (
-    "Category", "Series", "System Model", "Indoor Unit", "Outdoor Unit",
-    "Cooling (Btu/hr)", "Cooling (Tons)", "Cooling (kW)", "Excess %",
-    "Airflow (CFM)", "CFM Cover %", "Sensible", "EER", "Type", "Power Supply",
-)
-_RESULTS_TABLE_COLUMNS = (
-    "Category", "Series", "System Model", "Cooling (Btu/hr)", "Excess %",
-    "Airflow (CFM)", "CFM Cover %", "EER", "Sensible", "Cooling (Tons)",
-    "Cooling (kW)", "Indoor Unit", "Outdoor Unit", "Type", "Power Supply",
-)
-_RESULTS_TABLE_COLUMN_ORDER = tuple(
-    _RESULTS_TABLE_BASE_COLUMNS.index(name) for name in _RESULTS_TABLE_COLUMNS
-)
 
 
-def _reorder_results_table_cells(cells):
-    """Reorder base-order cell specs to match the visible Results headers."""
-    if len(cells) != len(_RESULTS_TABLE_COLUMN_ORDER):
-        raise ValueError(
-            "Results cell count must match the Results table column count."
-        )
-    return [cells[index] for index in _RESULTS_TABLE_COLUMN_ORDER]
-
-
-def _window_sizes_for_available_geometry(width: int, height: int):
-    """Return (width, height, min_width, min_height) in Qt logical pixels."""
-    if width <= 0 or height <= 0:
-        raise ValueError("Available screen dimensions must be positive.")
-
-    target_width = max(1, min(1300, int(width * 0.95)))
-    target_height = max(1, min(820, int(height * 0.92)))
-    min_width = min(850, target_width)
-    min_height = min(560, target_height)
-    return target_width, target_height, min_width, min_height
-
-
-@contextmanager
-def _atomic_export(path: str):
-    """Write an export beside the final path and replace it only on success."""
-    final_path = os.path.abspath(path)
-    directory = os.path.dirname(final_path) or "."
-    suffix = os.path.splitext(final_path)[1] or ".tmp"
-    fd, temporary_path = tempfile.mkstemp(
-        prefix=f".{os.path.basename(final_path)}.",
-        suffix=suffix,
-        dir=directory,
-    )
-    os.close(fd)
-    try:
-        yield temporary_path
-        os.replace(temporary_path, final_path)
-    except Exception:
-        try:
-            os.unlink(temporary_path)
-        except FileNotFoundError:
-            pass
-        raise
-
-
-def _replace_export_extension(path: str, required_ext: str) -> str:
-    """Replace a textual extension while preserving numeric dotted names."""
-    base, suffix = os.path.splitext(path)
-    if suffix and suffix[1:].isalpha():
-        path = base
-    return f"{path}.{required_ext.lstrip('.')}"
-
-
-def _export_error_message(exc: Exception) -> str:
-    """Explain common Windows file-lock failures in terms users can fix."""
-    if (isinstance(exc, PermissionError)
-            or getattr(exc, "errno", None) in {errno.EACCES, errno.EPERM, errno.EBUSY}):
-        return (
-            "The export could not replace the destination file. If it is open in "
-            "Excel or Word, close it and try again; also check that you have "
-            "permission to write to the selected folder."
-        )
-    return str(exc)
 
 # ── Inverter ROI tab (optional module) ────────────────────────────
 try:
@@ -381,242 +324,7 @@ class UpdateWorker(QThread):
 
 # ── Main Application ───────────────────────────────────────────────────────────
 
-def _style_excel_file(path: str):
-    """تنسيق ملف الإكسل المصدّر بشكل هندسي احترافي بدون إيموجي وبأعمدة متسعة."""
-    try:
-        import openpyxl
-        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-        from openpyxl.utils import get_column_letter
 
-        wb = openpyxl.load_workbook(path)
-        ws = wb.active
-        ws.views.sheetView[0].showGridLines = True
-        ws.freeze_panes = "A2"
-        ws.auto_filter.ref = ws.dimensions
-
-        header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
-        header_font = Font(name="Segoe UI", size=10, bold=True, color="FFFFFF")
-        row_alt_fill = PatternFill(start_color="F2F5F9", end_color="F2F5F9", fill_type="solid")
-        thin_border = Border(
-            left=Side(style='thin', color='D9D9D9'),
-            right=Side(style='thin', color='D9D9D9'),
-            top=Side(style='thin', color='D9D9D9'),
-            bottom=Side(style='thin', color='D9D9D9')
-        )
-
-        ws.row_dimensions[1].height = 28
-        for cell in ws[1]:
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            cell.border = thin_border
-
-        max_row = ws.max_row
-        max_col = ws.max_column
-
-        for row_idx in range(2, max_row + 1):
-            ws.row_dimensions[row_idx].height = 20
-            is_even = (row_idx % 2 == 0)
-            for col_idx in range(1, max_col + 1):
-                cell = ws.cell(row=row_idx, column=col_idx)
-                cell.border = thin_border
-                cell.font = Font(name="Segoe UI", size=9.5)
-                if is_even:
-                    cell.fill = row_alt_fill
-
-                col_name = str(ws.cell(row=1, column=col_idx).value or "")
-                val = cell.value
-
-                # محاذاة وتنسيق الأرقام
-                if isinstance(val, (int, float)):
-                    if any(k in col_name for k in ["Btu", "CFM", "Capacity"]):
-                        cell.number_format = '#,##0'
-                        cell.alignment = Alignment(horizontal="right", vertical="center")
-                    elif any(k in col_name for k in ["Tons", "kW"]):
-                        cell.number_format = '#,##0.00'
-                        cell.alignment = Alignment(horizontal="right", vertical="center")
-                    elif "%" in col_name or "Excess" in col_name or "Cover" in col_name:
-                        cell.number_format = '0.0"%"'
-                        cell.alignment = Alignment(horizontal="right", vertical="center")
-                    elif any(k in col_name for k in ["EER", "Weight", "Sound", "Area"]):
-                        cell.number_format = '0.00'
-                        cell.alignment = Alignment(horizontal="right", vertical="center")
-                    else:
-                        cell.alignment = Alignment(horizontal="center", vertical="center")
-                else:
-                    if any(k in col_name for k in ["System", "Units", "Type", "Status", "Sensible OK"]):
-                        cell.alignment = Alignment(horizontal="center", vertical="center")
-                    else:
-                        cell.alignment = Alignment(horizontal="left", vertical="center")
-
-        # ضبط اتساع الأعمدة تلقائياً
-        for col in ws.columns:
-            col_letter = get_column_letter(col[0].column)
-            max_len = 0
-            for cell in col:
-                v_str = str(cell.value or '')
-                max_len = max(max_len, len(v_str))
-            ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
-
-        wb.save(path)
-    except Exception:
-        logger.exception("Failed to style Excel export: %s", path)
-        raise
-
-# ══════════════════════════════════════════════════════════════
-#  Electrical Load Schedule (merged from electrical_tab.py)
-# ══════════════════════════════════════════════════════════════
-
-def append_electrical_sheet_to_excel(excel_path: str, unit_rows: list[dict], summary: dict):
-    """Append a formatted 'Electrical_Load_Schedule' sheet to an Excel file."""
-    try:
-        import openpyxl
-        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-        from openpyxl.utils import get_column_letter
-
-        wb = openpyxl.load_workbook(excel_path)
-        sheet_name = "Electrical_Schedule"
-        if sheet_name in wb.sheetnames:
-            del wb[sheet_name]
-        ws = wb.create_sheet(title=sheet_name)
-        ws.views.sheetView[0].showGridLines = True
-
-        header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
-        card_fill = PatternFill(start_color="F2F5F9", end_color="F2F5F9", fill_type="solid")
-        highlight_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
-
-        font_title = Font(name="Segoe UI", size=13, bold=True, color="1F4E79")
-        font_hdr = Font(name="Segoe UI", size=9.5, bold=True, color="FFFFFF")
-        font_bold = Font(name="Segoe UI", size=9.5, bold=True)
-        font_regular = Font(name="Segoe UI", size=9.0)
-
-        thin = Side(style='thin', color='D9D9D9')
-        border_all = Border(left=thin, right=thin, top=thin, bottom=thin)
-
-        # Title
-        ws["A1"] = "HVAC Electrical Load Schedule & Cable Sizing (IEC 60364)"
-        ws["A1"].font = font_title
-        ws.row_dimensions[1].height = 24
-
-        # Summary KPIs Banner
-        ws["A3"] = f"Total Load: {summary['total_kw']:.2f} kW"
-        ws["C3"] = f"Demand Current: {summary['demand_fla']:.1f} A"
-        ws["E3"] = f"Main Breaker: {summary['main_mcb']} A"
-        ws["G3"] = f"Generator: {summary['generator_kva']} kVA"
-        for col_letter in ["A", "C", "E", "G"]:
-            ws[f"{col_letter}3"].font = font_bold
-            ws[f"{col_letter}3"].fill = highlight_fill
-
-        # Table Headers
-        headers = [
-            "#", "System Tag", "Model", "Qty", "Elec kW", "Voltage",
-            "Ph", "FLA (A)", "MCB Rating", "Cable Specification", "V-Drop %", "Status"
-        ]
-        ws.row_dimensions[5].height = 22
-        for c_idx, h in enumerate(headers, start=1):
-            cell = ws.cell(row=5, column=c_idx, value=h)
-            cell.fill = header_fill
-            cell.font = font_hdr
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-            cell.border = border_all
-
-        # Data Rows
-        for r_idx, r in enumerate(unit_rows, start=6):
-            ws.row_dimensions[r_idx].height = 19
-            row_fill = card_fill if r_idx % 2 == 0 else None
-            vals = [
-                r_idx - 5,
-                r.get("system", f"AC-{r_idx-5}"),
-                r.get("model", "N/A"),
-                r.get("qty", 1),
-                round(r["kw_elec"], 2),
-                f"{int(r['voltage'])} V",
-                f"{r['phase']} Ph",
-                round(r["fla"], 1),
-                f"{r['mcb_size']} A",
-                r["cable_desc"],
-                f"{r['vdrop_pct']:.2f} %",
-                "OK" if r["vdrop_ok"] else "High V-Drop"
-            ]
-            for c_idx, v in enumerate(vals, start=1):
-                cell = ws.cell(row=r_idx, column=c_idx, value=v)
-                cell.font = font_regular
-                cell.border = border_all
-                if row_fill:
-                    cell.fill = row_fill
-                cell.alignment = Alignment(
-                    horizontal="left" if c_idx in (2, 3, 10) else "center",
-                    vertical="center"
-                )
-
-        # Autofit columns
-        for col in ws.columns:
-            col_letter = get_column_letter(col[0].column)
-            max_len = max(len(str(c.value or '')) for c in col)
-            ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
-
-        wb.save(excel_path)
-    except Exception:
-        logger.exception("Failed to append electrical sheet to Excel: %s", excel_path)
-        raise
-
-
-def append_electrical_section_to_docx(doc, unit_rows: list[dict], summary: dict):
-    """Append the Electrical Load Schedule section to a Word Document."""
-    try:
-        from docx.shared import Pt, RGBColor, Inches
-
-        doc.add_page_break()
-        h = doc.add_heading("HVAC Electrical Load & Distribution Schedule", level=1)
-        h.paragraph_format.space_before = Pt(8)
-        h.paragraph_format.space_after = Pt(4)
-
-        desc = doc.add_paragraph(
-            f"Electrical sizing according to IEC 60364 & Egyptian Code. "
-            f"Total Connected Load: {summary['total_kw']:.2f} kW | "
-            f"Design Current: {summary['demand_fla']:.1f} A | "
-            f"Main Breaker: {summary['main_mcb']} A | "
-            f"Main Feeder: {summary['main_cable_desc']}."
-        )
-        desc.runs[0].font.size = Pt(9.5)
-
-        cols = ["#", "Tag", "Model", "Qty", "kW", "Supply", "FLA", "MCB", "Cable Specification", "V-Drop"]
-        tbl = doc.add_table(rows=1, cols=len(cols))
-        tbl.style = "Light Grid Accent 1"
-        hdr = tbl.rows[0].cells
-        for i, name in enumerate(cols):
-            hdr[i].text = name
-            for p in hdr[i].paragraphs:
-                for r in p.runs:
-                    r.bold = True
-                    r.font.size = Pt(8)
-
-        for idx, r in enumerate(unit_rows, start=1):
-            cells = tbl.add_row().cells
-            cells[0].text = str(idx)
-            cells[1].text = str(r.get("system", f"AC-{idx}"))
-            cells[2].text = str(r.get("model", "—"))
-            cells[3].text = str(r.get("qty", 1))
-            cells[4].text = f"{r['kw_elec']:.2f}"
-            cells[5].text = f"{int(r['voltage'])}V/{r['phase']}P"
-            cells[6].text = f"{r['fla']:.1f}A"
-            cells[7].text = f"{r['mcb_size']}A"
-            cells[8].text = str(r["cable_desc"])
-            cells[9].text = f"{r['vdrop_pct']:.1f}%"
-            for c in cells:
-                for p in c.paragraphs:
-                    for run in p.runs:
-                        run.font.size = Pt(8)
-
-        doc.add_paragraph()
-        if summary.get("warnings"):
-            for w in summary["warnings"]:
-                p_w = doc.add_paragraph(w)
-                p_w.runs[0].font.size = Pt(9)
-                p_w.runs[0].font.color.rgb = RGBColor(0xB9, 0x1C, 0x1C)
-    except Exception:
-        logger.exception("Failed to append electrical section to Word document")
-        raise
 
 
 class ElectricalScheduleTab(QWidget):
@@ -2210,32 +1918,7 @@ class HAPToCarrierApp(QMainWindow):
     # ──────────────────────────────────────────────────────────────
     def _best_overall_index(self, df):
         """Best-balanced unit: 0.40*size + 0.35*EER + 0.25*airflow (0..1)."""
-        score = pd.Series(0.0, index=df.index)
-
-        ex = df["Excess %"].clip(lower=0)
-        if ex.max() > ex.min():
-            score += 0.40 * (1 - (ex - ex.min()) / (ex.max() - ex.min()))
-        else:
-            score += 0.40
-
-        eer = df["EER (Btu/Wh)"]
-        eer = eer.fillna(eer.min() if eer.notna().any() else 0)
-        if eer.max() > eer.min():
-            score += 0.35 * (eer - eer.min()) / (eer.max() - eer.min())
-        else:
-            score += 0.35
-
-        cov = df["CFM Coverage %"]
-        if cov.notna().any():
-            delta = (cov - 100).abs().fillna((cov - 100).abs().max())
-            if delta.max() > delta.min():
-                score += 0.25 * (1 - (delta - delta.min()) / (delta.max() - delta.min()))
-            else:
-                score += 0.25
-        else:
-            score += 0.25
-
-        return score.idxmax()
+        return best_overall_index(df)
 
     def _select_df_row(self, df_idx):
         """Select + scroll to the table row whose UserRole == df_idx."""
@@ -2259,31 +1942,11 @@ class HAPToCarrierApp(QMainWindow):
                                     "Run a search first (Upload + Confirm & Search).")
             return
 
-        if criterion == "size":
-            idx = df["Excess %"].idxmin()
-            why = f"least oversized ({df.loc[idx, 'Excess %']:.1f}% excess)"
-        elif criterion == "eer":
-            valid = df[df["EER (Btu/Wh)"].notna()]
-            if valid.empty:
-                QMessageBox.information(self, "No EER data",
-                                        "No EER values available.")
-                return
-            idx = valid["EER (Btu/Wh)"].idxmax()
-            why = f"highest EER ({valid.loc[idx, 'EER (Btu/Wh)']:g})"
-        elif criterion == "cfm":
-            cov = df["CFM Coverage %"]
-            valid = df[cov.notna() & (cov >= 100)]
-            if valid.empty:
-                valid = df[cov.notna()]
-            if valid.empty:
-                QMessageBox.information(self, "No CFM data",
-                                        "No CFM coverage values available.")
-                return
-            idx = (valid["CFM Coverage %"] - 100).abs().idxmin()
-            why = f"CFM coverage {valid.loc[idx, 'CFM Coverage %']:.0f}%"
-        else:  # "overall"
-            idx = self._best_overall_index(df)
-            why = "balanced score (size + EER + airflow)"
+        pick = pick_best(df, criterion)
+        if not pick.ok:
+            QMessageBox.information(self, pick.notice_title, pick.notice_text)
+            return
+        idx, why = pick.index, pick.why
 
         if not self._select_df_row(idx):
             self._set_status("⚠  Could not locate the row (try re-sorting).")
@@ -3066,11 +2729,7 @@ class HAPToCarrierApp(QMainWindow):
             "G01"      + CSV filter     -> "G01.csv"
             "G01.xlsx" + Excel filter   -> "G01.xlsx"  (unchanged)
         """
-        m = re.search(r'\(\*\.(\w+)\)', selected_filter)
-        if not m:
-            return path
-        required_ext = m.group(1)
-        return _replace_export_extension(path, required_ext)
+        return normalize_save_path(path, selected_filter)
 
     def _default_export_name(self, ext="xlsx", suffix=""):
         """Default filename for export.
@@ -3083,11 +2742,7 @@ class HAPToCarrierApp(QMainWindow):
         Example (upload "Systems Design Report.RTF", click G01 row):
             → "G01_selected.xlsx" / "G01.docx" / "G01.csv"
         """
-        raw = (self.current_system_name
-               or self.source_basename
-               or "Carrier_AC_Selection")
-        base = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", raw).strip() or "export"
-        return f"{base}{suffix}.{ext}"
+        return default_export_name(self.current_system_name, self.source_basename, ext, suffix)
 
     def _save_file_dialog(self, title, default_path, filters_str):
         """Save dialog whose filename extension follows the selected filter.
@@ -3120,38 +2775,7 @@ class HAPToCarrierApp(QMainWindow):
 
     def _prepare_export_df(self, df):
         """Copy of df for export: helper columns rounded, NaN -> '', reordered."""
-        out = df.copy()
-        # Prepend the active HAP system name so the file is self-describing
-        if self.current_system_name:
-            out.insert(0, "System", self.current_system_name)
-        for col, nd in (("Excess %", 1), ("CFM Coverage %", 0), ("Effective Btu", 0)):
-            if col in out.columns:
-                out[col] = out[col].round(nd)
-
-        preferred = [
-            "System",
-            "Category", "Series", "System Model",
-            "Indoor Unit Model", "Outdoor Unit Model", "Type",
-            "Cooling Capacity (Btu/hr)", "Effective Btu", "Excess %",
-            "Airflow (CFM) L/M/H", "High CFM (numeric)",
-            "CFM Coverage %", "CFM Approx", "Sensible OK",
-            "EER (Btu/Wh)", "Power Supply",
-            "Cooling Capacity (kW)", "Heating Capacity (Btu/hr)",
-            "Heating Capacity (kW)", "Airflow (m3/h)",
-            "Indoor Unit Dimensions (mm)", "Indoor Unit Weight (kg)",
-            "Outdoor Unit Dimensions (mm)", "Outdoor Unit Weight (kg)",
-            "Outdoor Sound dB(A)",
-            "Approx. Area (m2)*", "Notes",
-        ]
-        ordered = [c for c in preferred if c in out.columns and c != "CFM Approx"]
-        rest = [c for c in out.columns if c not in ordered and c != "CFM Approx"]
-        res_df = out[ordered + rest].fillna("")
-        for col in res_df.columns:
-            res_df[col] = res_df[col].apply(
-                lambda v: re.sub(r'[\U00010000-\U0010ffff]|[\u2600-\u27bf]|✔|✘', '', str(v)).strip()
-                if isinstance(v, str) else v
-            )
-        return res_df
+        return prepare_export_df(df, self.current_system_name)
 
     def export_results(self):
         if self.current_results is None or len(self.current_results) == 0:
@@ -3963,75 +3587,7 @@ class HAPToCarrierApp(QMainWindow):
         self._set_status("اتفضت السلة.")
 
     def _prepare_cart_export_df(self):
-        rows = []
-        for sys_name, entry in self.selected_units.items():
-            r         = entry["row"]
-            n_units   = entry["units"]
-            load_btu  = float(entry.get("load_btu", 0) or 0)
-            load_cfm  = float(entry.get("load_cfm", 0) or 0)
-            load_sens = float(entry.get("load_sensible", 0) or 0)
-            unit_btu  = float(entry.get("effective_btu", r.get("Effective Btu", r['Cooling Capacity (Btu/hr)'])))
-            unit_cfm  = float(r['High CFM (numeric)'])
-            total_btu = unit_btu * n_units
-            total_cfm = unit_cfm * n_units
-            excess = ((total_btu - load_btu) / load_btu * 100.0
-                      if load_btu > 0 else float("nan"))
-            cfm_cover = (total_cfm / load_cfm * 100.0
-                         if load_cfm > 0 else float("nan"))
-
-            d = r.to_dict()
-            d["System"]                  = sys_name
-            d["Load (Btu/hr)"]           = load_btu
-            d["Load (Tons)"]             = load_btu / core.BTU_PER_TON
-            d["Load (CFM)"]              = load_cfm
-            d["Sensible (Btu/hr)"]       = load_sens
-            d["Units"]                   = n_units
-            d["Unit Capacity (Btu/hr)"]  = unit_btu
-            d["Unit CFM"]                = unit_cfm
-            d["Total Capacity (Btu/hr)"] = total_btu
-            d["Total CFM"]               = total_cfm
-            d["Excess %"]                = excess
-            d["CFM Cover %"]             = cfm_cover
-            rows.append(d)
-
-        out = pd.DataFrame(rows)
-        head = ["System",
-                "Load (Btu/hr)", "Load (Tons)", "Load (CFM)",
-                "Sensible (Btu/hr)",
-                "Units",
-                "Unit Capacity (Btu/hr)", "Unit CFM",
-                "Total Capacity (Btu/hr)", "Total CFM",
-                "Excess %", "CFM Cover %"]
-
-        # ترتيب منظم بدون تكرار واستبعاد الأعمدة التقنية مثل CFM Approx
-        clean_specs = [
-            "Category", "Series", "System Model", "Indoor Unit Model", "Outdoor Unit Model",
-            "Type", "Power Supply", "EER (Btu/Wh)",
-            "Heating Capacity (Btu/hr)", "Heating Capacity (kW)", "Airflow (m3/h)",
-            "Indoor Unit Dimensions (mm)", "Indoor Unit Weight (kg)",
-            "Outdoor Unit Dimensions (mm)", "Outdoor Unit Weight (kg)", "Outdoor Sound dB(A)",
-            "Approx. Area (m2)*", "Notes"
-        ]
-        cols = head + [c for c in clean_specs if c in out.columns]
-        out = out[cols]
-
-        for col, nd in (("Excess %", 1), ("CFM Cover %", 0),
-                        ("Load (Btu/hr)", 0), ("Load (Tons)", 2),
-                        ("Load (CFM)", 0), ("Sensible (Btu/hr)", 0),
-                        ("Unit Capacity (Btu/hr)", 0), ("Unit CFM", 0),
-                        ("Total Capacity (Btu/hr)", 0), ("Total CFM", 0)):
-            if col in out.columns:
-                out[col] = out[col].round(nd)
-
-        out = out.fillna("")
-        # تنظيف كل النصوص من أي إيموجي أو رموز تماماً
-        for col in out.columns:
-            out[col] = out[col].apply(
-                lambda v: re.sub(r'[\U00010000-\U0010ffff]|[\u2600-\u27bf]', '',
-                                 str(v).replace('✔', 'OK').replace('✘', 'Low')).strip()
-                if isinstance(v, str) else v
-            )
-        return out
+        return prepare_cart_export_df(self.selected_units)
 
     def _export_cart(self):
         if not self.selected_units:

@@ -18,7 +18,11 @@ REQUIRED_FILES = (
     "version.py",
     "apply_update.ps1",
 )
-CAD_FILES = tuple(f"cad/{name}" for name in updater.ALLOWED_CAD_FILES)
+CAD_FILES = tuple(
+    f"{package}/{name}"
+    for package, names in updater.ALLOWED_PACKAGE_FILES.items()
+    for name in names
+)  # cad/ plus the Phase 1 packages (engineering, equipment, hap, reports, ui)
 
 
 def _write_valid_archive(path, extra_files=None):
@@ -256,3 +260,32 @@ def test_download_rejects_oversized_content_length(tmp_path, monkeypatch):
             destination,
         )
     assert not destination.exists()
+
+
+def test_every_package_module_on_disk_is_allow_listed_for_updates():
+    """A new module under a shipped package must be added to the updater allowlist."""
+    from pathlib import Path
+
+    root = Path(updater.__file__).resolve().parent
+    for package, allowed in updater.ALLOWED_PACKAGE_FILES.items():
+        on_disk = {p.name for p in (root / package).glob("*.py")}
+        assert on_disk == set(allowed), f"{package}/ differs from updater allowlist"
+
+
+def test_archive_missing_a_phase1_package_file_is_rejected(tmp_path):
+    archive = tmp_path / "missing-package.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        for name in REQUIRED_FILES:
+            zf.writestr(name, "content")
+        for name in CAD_FILES:
+            if name != "equipment/indoor_selector.py":
+                zf.writestr(name, "content")
+    with pytest.raises(UpdateError, match="equipment/indoor_selector.py"):
+        updater._validate_archive(archive)
+
+
+def test_unknown_file_inside_a_package_directory_is_rejected(tmp_path):
+    archive = tmp_path / "extra.zip"
+    _write_valid_archive(archive, {"reports/backdoor.py": "bad"})
+    with pytest.raises(UpdateError, match="Unexpected file"):
+        updater._validate_archive(archive)

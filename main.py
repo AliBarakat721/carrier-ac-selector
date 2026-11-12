@@ -40,7 +40,8 @@ import ocr_engine
 import updater
 from cad.dxf_exporter import export_hvac_dxf
 from cad.importer import read_cad_file
-from cad.space_detector import detect_spaces
+from cad.room_review import RoomReviewSession
+from room_review_dialog import RoomReviewDialog
 from cad.workflow import RoomAssignment, build_indoor_placements, suggest_room_assignments
 from version import APP_VERSION
 import math
@@ -975,6 +976,7 @@ class HAPToCarrierApp(QMainWindow):
         self.cad_rooms = []
         self.cad_diagnostics = []
         self.cad_room_systems = {}
+        self.cad_review_session = None   # RoomReviewSession for the loaded drawing
         self.cad_workspace_tab = None
 
         self._build_ui()
@@ -1763,6 +1765,11 @@ class HAPToCarrierApp(QMainWindow):
         layout.addWidget(header)
 
         actions = QHBoxLayout()
+        self.btn_cad_review = QPushButton("🔍  Review rooms & layers…")
+        self.btn_cad_review.setObjectName("btn_pick")
+        self.btn_cad_review.setEnabled(False)
+        self.btn_cad_review.clicked.connect(lambda: self.review_cad_rooms())
+        actions.addWidget(self.btn_cad_review)
         self.btn_cad_export = QPushButton("💾  Export Indoor Units + Schedule")
         self.btn_cad_export.setObjectName("btn_success")
         self.btn_cad_export.setEnabled(False)
@@ -1818,29 +1825,69 @@ class HAPToCarrierApp(QMainWindow):
     def _load_cad(self, path: str):
         try:
             document = read_cad_file(path)
-            diagnostics = []
-            rooms = detect_spaces(document, diagnostics=diagnostics)
+            session = RoomReviewSession(document=document)
         except Exception as exc:
             self.cad_source_path = ""
             self.cad_document = None
             self.cad_rooms = []
             self.cad_diagnostics = []
+            self.cad_review_session = None
             self._render_cad_rooms()
             QMessageBox.critical(self, "CAD Import Error", str(exc))
             return
+
         self.cad_source_path = path
         self.cad_document = document
-        self.cad_rooms = rooms
-        self.cad_diagnostics = diagnostics
-        self.cad_room_systems = suggest_room_assignments(rooms, self.systems)
+        self.cad_review_session = session
+        self.cad_diagnostics = list(session.report.diagnostics) if session.report else []
         self._open_cad_workspace(path)
-        self._render_cad_rooms()
+        # Phase 3: nothing becomes a room without review.  The dialog is the only
+        # path from "polygon in the drawing" to "room in the HVAC workflow".
+        self.review_cad_rooms(initial=True)
         if hasattr(self, "lbl_cad_landing_status"):
             self.lbl_cad_landing_status.setText(
                 f"Workspace opened for {os.path.basename(path)}. "
-                "Use the new CAD tab to review the detected rooms."
+                "Review the detected rooms in the CAD tab before exporting."
             )
-        self._set_status(f"✅ {os.path.splitext(path)[1][1:].upper()} loaded — {len(rooms)} room(s) detected.")
+
+    def review_cad_rooms(self, initial: bool = False):
+        """Open the layer / room-candidate review dialog for the loaded drawing."""
+        session = getattr(self, "cad_review_session", None)
+        if session is None:
+            if not initial:
+                QMessageBox.information(self, "No CAD File", "Upload a DWG or DXF floor plan first.")
+            return
+        dialog = RoomReviewDialog(session, self)
+        if dialog.exec() != RoomReviewDialog.Accepted:
+            if initial:
+                self._apply_cad_review(session)
+                self._set_status(
+                    "⚠️ CAD loaded without room review — no room can be exported "
+                    "until the review is applied."
+                )
+            return
+        self._apply_cad_review(session)
+
+    def _apply_cad_review(self, session: RoomReviewSession):
+        """Take the reviewer's accepted rooms into the HVAC workflow."""
+        self.cad_review_session = session
+        rooms = session.usable_rooms
+        self.cad_rooms = rooms
+        self.cad_diagnostics = list(session.report.diagnostics) if session.report else []
+        known_ids = {room.room_id for room in rooms}
+        self.cad_room_systems = {
+            room_id: name for room_id, name in self.cad_room_systems.items() if room_id in known_ids
+        }
+        for room_id, system_name in suggest_room_assignments(rooms, self.systems).items():
+            self.cad_room_systems.setdefault(room_id, system_name)
+        self._render_cad_rooms()
+        blockers = session.blockers()
+        if blockers:
+            self._set_status(
+                f"⚠️ {len(rooms)} room(s) approved; review incomplete — {blockers[0]}"
+            )
+        else:
+            self._set_status(f"✅ {len(rooms)} room(s) approved for the HVAC workflow.")
 
     def _cad_system_names(self):
         names = []
@@ -1903,8 +1950,10 @@ class HAPToCarrierApp(QMainWindow):
         assigned = sum(1 for room in self.cad_rooms if self.cad_room_systems.get(room.room_id))
         diag_text = f"; {len(self.cad_diagnostics)} geometry diagnostic(s)" if self.cad_diagnostics else ""
         self.lbl_cad_status.setText(
-            f"{len(self.cad_rooms)} room(s) detected; {assigned} system assignment(s){diag_text}."
+            f"{len(self.cad_rooms)} room(s) approved; {assigned} system assignment(s){diag_text}."
         )
+        if hasattr(self, "btn_cad_review"):
+            self.btn_cad_review.setEnabled(self.cad_review_session is not None)
         self._update_cad_export_state()
 
     def _update_cad_export_state(self):

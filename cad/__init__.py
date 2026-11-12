@@ -17,6 +17,14 @@ from .layer_analyzer import (
     normalize_layer_name,
     summarize_decisions,
 )
+from .room_review import (
+    ACCEPTED_STATUSES,
+    ReviewAction,
+    ReviewStatus,
+    RoomReviewRow,
+    RoomReviewSession,
+    room_key,
+)
 from .layer_manager import ensure_hvac_layers, validate_hvac_layers
 from .block_manager import (
     create_block_definition,
@@ -58,6 +66,12 @@ __all__ = [
     "RoomDetectionReport",
     "detect_spaces",
     "detect_spaces_with_review",
+    "RoomReviewSession",
+    "RoomReviewRow",
+    "ReviewAction",
+    "ReviewStatus",
+    "ACCEPTED_STATUSES",
+    "room_key",
     "CandidateStatus",
     "ClassificationConfidence",
     "LayerClass",

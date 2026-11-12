@@ -60,7 +60,7 @@ records the current behaviour, and a **desired-behaviour test** marked
 | ID | Defect | Current behaviour | Status in this branch |
 |---|---|---|---|
 | R1 | Room ↔ HAP system matching by drawing order | `zip()` pairs leftover rooms and systems when counts are equal (`cad/workflow.py:61-64`) | Locked, `xfail` → Phase 4 |
-| R2 | Furniture closed curve becomes a room | legacy `detect_spaces` accepts any closed curve; 0.5 m² furniture circle reported as a room | **Fixed** in `detect_spaces_with_review`; legacy API unchanged and characterised |
+| R2 | Furniture closed curve becomes a room | legacy `detect_spaces` accepts any closed curve; 0.5 m² furniture circle reported as a room | **Fixed** in `detect_spaces_with_review` **and enforced in the GUI** via `RoomReviewSession` + `RoomReviewDialog`; legacy API unchanged and characterised |
 | R3 | Negative / non-finite electrical input | `NaN`/`inf` raise `ValueError`; **negative capacity silently falls back to 1.5 kW** | Partially fixed, `xfail` → Phase 11 |
 | R4 | Illogical ROI inputs | `saving_pct=150` produces negative inverter kW and impossible savings | Locked, `xfail` → Phase 13 |
 | R5 | Block geometry ignores model dimensions | every block is a fixed 1.0 × 0.5 rectangle | Locked, `xfail` → Phase 8 |
@@ -81,7 +81,9 @@ re-exporting onto it stays allowed (idempotent update, covered by
 ## 4. Behaviours that must not change without an explicit decision
 
 1. `detect_spaces(...)` signature and results — it is the public CAD API used by
-   the GUI and by 24 existing tests.
+   24 existing tests and by `detect_spaces_with_review`. The **GUI no longer
+   calls it directly**: `main.py` goes through `RoomReviewSession`, and
+   `tests/test_room_review_dialog.py` fails if that regresses.
 2. `RoomSpace.layer` stays `None` for `wall_lines` rooms; the contributing
    layers are exposed separately as `boundary_layers` and `effective_layer`.
 3. Export remains atomic: temp file → round-trip verify → backup → `os.replace`
@@ -95,7 +97,8 @@ re-exporting onto it stays allowed (idempotent update, covered by
 ## 5. Environment caveats
 
 * PySide6 cannot open a real window in this sandbox. GUI tests import only pure
-  helpers from `main.py` and run with `QT_QPA_PLATFORM=offscreen`.
+  helpers from `main.py` and run with `QT_QPA_PLATFORM=offscreen`. The review
+  dialog is exercised headlessly the same way (`tests/test_room_review_dialog.py`).
 * DWG import requires the external ODA File Converter; DXF paths are fully
   testable without it.
 * The equipment catalog is read from `data/Carrier_AC_Database.xlsx` and is

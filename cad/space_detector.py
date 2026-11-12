@@ -13,7 +13,7 @@ from shapely.ops import polygonize, unary_union
 from shapely.strtree import STRtree
 from shapely.validation import explain_validity
 
-from .dxf_reader import CadDocument
+from .dxf_reader import CadDocument, unit_code_for, unit_name, unit_scale_to_meters
 from .importer import read_cad_file
 from .layer_analyzer import (
     CandidateStatus,
@@ -618,6 +618,9 @@ class RoomDetectionReport:
     units_note: str
     min_area_m2: float
     max_area_m2: float | None = None
+    #: ``"DRAWING"`` when read from ``$INSUNITS``, ``"USER_CONFIRMED"`` when the
+    #: reviewer supplied the units, ``"UNVERIFIED"`` when neither happened.
+    units_source: str = "DRAWING"
 
     def _by_status(self, status: CandidateStatus) -> list[RoomSpace]:
         return [room for room in self.rooms if room.candidate_status == status.value]
@@ -695,6 +698,7 @@ def detect_spaces_with_review(
     max_area_m2: float | None = None,
     allow_circular_curves: bool = False,
     require_label: bool = False,
+    units_override: int | str | None = None,
     include_wall_lines: bool = True,
     tolerance: float = 1e-6,
     gap_tolerance: float = 0.0,
@@ -718,7 +722,9 @@ def detect_spaces_with_review(
       are rejected even when they are perfectly closed.
     * Polygons smaller than ``min_area_m2`` are rejected.
     * When ``$INSUNITS`` is missing, every candidate is flagged
-      ``DRAWING_UNITS_UNVERIFIED``.
+      ``DRAWING_UNITS_UNVERIFIED``.  Passing ``units_override`` (a DXF unit code
+      or a unit name such as ``"meters"``) records that the reviewer confirmed
+      the drawing units, and areas are then scaled with that unit.
     """
 
     document = (
@@ -771,9 +777,38 @@ def detect_spaces_with_review(
     units_status, units_note = _units_note(document)
     units_verified = document.units_verified
     scale = document.unit_scale_to_meters
+    units_source = "DRAWING" if units_verified else "UNVERIFIED"
+    resolved_units = document.units
+    if units_override is not None:
+        override_scale = unit_scale_to_meters(units_override)
+        if override_scale is None:
+            raise ValueError(
+                f"Unsupported drawing units {units_override!r}. "
+                f"Use a DXF unit code or one of the names: "
+                f"{', '.join(sorted({'meters', 'millimeters', 'centimeters', 'inches', 'feet'}))}."
+            )
+        code = unit_code_for(units_override)
+        resolved = unit_name(code) if code is not None else str(units_override)
+        units_status = "USER_CONFIRMED"
+        units_note = (
+            f"Units confirmed by the reviewer as {resolved} "
+            f"(scale to metres = {override_scale}); "
+            f"drawing header reported $INSUNITS={document.unit_code} ({document.units})."
+        )
+        units_verified = True
+        scale = override_scale
+        units_source = "USER_CONFIRMED"
+        resolved_units = resolved
 
     for room in rooms:
         classification = mapping.classification(room.effective_layer)
+        if units_source == "USER_CONFIRMED" and scale is not None:
+            # The detector scaled with the *drawing* units (possibly none).  The
+            # reviewer's confirmed units win, so rescale from the raw polygon.
+            room.area = float(room.polygon.area * scale * scale)
+            room.perimeter = float(room.polygon.length * scale)
+            room.unit_status = "VERIFIED"
+            room.drawing_units = resolved_units
         area_m2 = room.area if scale is not None else None
         decision = evaluate_room_candidate(
             layer_class=classification.layer_class,
@@ -809,4 +844,5 @@ def detect_spaces_with_review(
         units_note=units_note,
         min_area_m2=min_area_m2,
         max_area_m2=max_area_m2,
+        units_source=units_source,
     )

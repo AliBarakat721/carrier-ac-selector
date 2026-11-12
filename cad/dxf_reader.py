@@ -65,6 +65,55 @@ _UNIT_SCALE_TO_METERS = {
 }
 
 
+#: Unit names a user may pick in the review UI, mapped to their DXF unit code.
+#: Only length units that make sense for a building drawing are offered.
+REVIEWABLE_UNITS: dict[str, int] = {
+    "millimeters": 4,
+    "centimeters": 5,
+    "meters": 6,
+    "inches": 1,
+    "feet": 2,
+}
+
+
+def unit_name(unit_code: int) -> str:
+    """Human-readable name for a DXF ``$INSUNITS`` code."""
+
+    return _UNITS.get(int(unit_code), f"code:{unit_code}")
+
+
+def unit_scale_to_meters(unit: int | str | None) -> float | None:
+    """Metres per drawing unit for a unit code **or** a unit name.
+
+    Returns ``None`` for unitless/unknown input so callers keep treating the
+    drawing as unverified instead of silently assuming metres.
+    """
+
+    if unit is None:
+        return None
+    if isinstance(unit, int):
+        return _UNIT_SCALE_TO_METERS.get(unit)
+    name = str(unit).strip().casefold()
+    for code, label in _UNITS.items():
+        if label.casefold() == name:
+            return _UNIT_SCALE_TO_METERS.get(code)
+    return None
+
+
+def unit_code_for(unit: int | str | None) -> int | None:
+    """Resolve a unit code from a code or a unit name (``None`` if unknown)."""
+
+    if unit is None:
+        return None
+    if isinstance(unit, int):
+        return unit if unit in _UNIT_SCALE_TO_METERS else None
+    name = str(unit).strip().casefold()
+    for code, label in _UNITS.items():
+        if label.casefold() == name:
+            return code
+    return None
+
+
 @dataclass(frozen=True)
 class CadEntity:
     """Minimal representation of a DXF entity for downstream analysis."""

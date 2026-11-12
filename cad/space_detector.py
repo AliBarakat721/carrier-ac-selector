@@ -13,8 +13,17 @@ from shapely.ops import polygonize, unary_union
 from shapely.strtree import STRtree
 from shapely.validation import explain_validity
 
-from .dxf_reader import CadDocument
+from .dxf_reader import CadDocument, unit_code_for, unit_name, unit_scale_to_meters
 from .importer import read_cad_file
+from .layer_analyzer import (
+    CandidateStatus,
+    LayerClass,
+    LayerMapping,
+    RoomCandidateDecision,
+    build_layer_mapping,
+    evaluate_room_candidate,
+    summarize_decisions,
+)
 
 
 @dataclass
@@ -35,6 +44,28 @@ class RoomSpace:
     raw_perimeter: float | None = None
     drawing_units: str = "unitless"
     geometry_diagnostic: str | None = None
+    # Populated only by :func:`detect_spaces_with_review`.  ``detect_spaces``
+    # leaves these at their neutral defaults so existing callers are unaffected.
+    layer_class: str = "UNCLASSIFIED"
+    candidate_status: str = CandidateStatus.NEEDS_REVIEW.value
+    candidate_reasons: tuple[str, ...] = ()
+    #: Layers that contributed boundary segments, most frequent first.  Only
+    #: populated for ``wall_lines`` rooms, which have no single source entity.
+    boundary_layers: tuple[str, ...] = ()
+
+    @property
+    def effective_layer(self) -> str | None:
+        """The layer to classify: the entity layer, else the dominant boundary layer."""
+
+        if self.layer:
+            return self.layer
+        return self.boundary_layers[0] if self.boundary_layers else None
+
+    @property
+    def is_usable_room(self) -> bool:
+        """True only for a CONFIRMED candidate with no blocking reason."""
+
+        return self.candidate_status == CandidateStatus.CONFIRMED.value
 
 
 def _scaled_metrics(polygon: Polygon, scale: float | None) -> tuple[float, float]:
@@ -375,6 +406,11 @@ def _line_polygon_spaces(
 ) -> tuple[list[RoomSpace], list[dict[str, object]]]:
     lines: list[LineString] = []
     line_records: list[tuple[LineString, str | None]] = []
+    handle_layers = {
+        entity.handle: entity.layer
+        for entity in document.entities
+        if entity.handle
+    }
     raw_lines = []
     for entity in document.entities:
         if wall_layers is not None and entity.layer.casefold() not in wall_layers:
@@ -437,6 +473,13 @@ def _line_polygon_spaces(
         area, perimeter = _scaled_metrics(polygon, scale)
         raw_area = float(polygon.area)
         raw_perimeter = float(polygon.length)
+        # A polygon built from wall linework has no single source entity, so the
+        # layer is the most common layer among its contributing boundaries.
+        # Without this, every wall-line room would be reported as UNCLASSIFIED.
+        layer_counts = Counter(
+            handle_layers[handle] for handle in handles if handle in handle_layers
+        )
+        dominant_layer = layer_counts.most_common(1)[0][0] if layer_counts else None
         rooms.append(
             RoomSpace(
                 room_id=f"ROOM-{offset:03d}",
@@ -444,6 +487,12 @@ def _line_polygon_spaces(
                 area=area,
                 perimeter=perimeter,
                 source="wall_lines",
+                boundary_layers=tuple(
+                    layer_name
+                    for layer_name, _ in sorted(
+                        layer_counts.items(), key=lambda item: (-item[1], item[0])
+                    )
+                ),
                 status="SNAPPED" if snapped_handles.intersection(handles) else "NEEDS_REVIEW",
                 boundary_handles=handles,
                 unit_status="VERIFIED" if scale is not None else "UNIT_UNKNOWN",
@@ -552,3 +601,248 @@ def detect_spaces(
     for room in rooms:
         room.room_id = _stable_room_id(room.polygon)
     return rooms
+
+
+@dataclass
+class RoomDetectionReport:
+    """Result of :func:`detect_spaces_with_review`.
+
+    The report keeps *every* detected polygon, including rejected ones, so the
+    UI can show why something was ignored instead of silently hiding it.
+    """
+
+    rooms: list[RoomSpace]
+    layer_mapping: LayerMapping
+    diagnostics: list[dict[str, object]]
+    units_status: str
+    units_note: str
+    min_area_m2: float
+    max_area_m2: float | None = None
+    #: ``"DRAWING"`` when read from ``$INSUNITS``, ``"USER_CONFIRMED"`` when the
+    #: reviewer supplied the units, ``"UNVERIFIED"`` when neither happened.
+    units_source: str = "DRAWING"
+
+    def _by_status(self, status: CandidateStatus) -> list[RoomSpace]:
+        return [room for room in self.rooms if room.candidate_status == status.value]
+
+    @property
+    def accepted(self) -> list[RoomSpace]:
+        return self._by_status(CandidateStatus.CONFIRMED)
+
+    @property
+    def needs_review(self) -> list[RoomSpace]:
+        return self._by_status(CandidateStatus.NEEDS_REVIEW)
+
+    @property
+    def rejected(self) -> list[RoomSpace]:
+        return self._by_status(CandidateStatus.REJECTED)
+
+    @property
+    def blocked_for_engineering(self) -> bool:
+        """True when at least one detected polygon still needs a human decision."""
+
+        return bool(self.needs_review)
+
+    def summary(self) -> dict[str, int]:
+        counts = summarize_decisions(
+            [
+                RoomCandidateDecision(
+                    status=CandidateStatus(room.candidate_status),
+                    reasons=room.candidate_reasons,
+                )
+                for room in self.rooms
+            ]
+        )
+        counts["total"] = len(self.rooms)
+        return counts
+
+    def reasons_table(self) -> list[dict[str, object]]:
+        """Flat rows for a review table: one row per room with joined reasons."""
+
+        return [
+            {
+                "room_id": room.room_id,
+                "label": room.label or "",
+                "layer": room.layer or "",
+                "layer_class": room.layer_class,
+                "source": room.source,
+                "area_m2": round(room.area, 3),
+                "status": room.candidate_status,
+                "reasons": "; ".join(room.candidate_reasons),
+            }
+            for room in self.rooms
+        ]
+
+
+def _units_note(document: CadDocument) -> tuple[str, str]:
+    if document.units_verified:
+        return (
+            "VERIFIED",
+            f"$INSUNITS={document.unit_code} ({document.units}); "
+            f"scale to metres = {document.unit_scale_to_meters}",
+        )
+    return (
+        "UNVERIFIED",
+        f"$INSUNITS={document.unit_code} ({document.units}). Areas and lengths are "
+        "raw drawing units and must not be used in engineering calculations until "
+        "the user confirms the drawing units.",
+    )
+
+
+def detect_spaces_with_review(
+    document_or_path: CadDocument | str | Path,
+    *,
+    layer_mapping: LayerMapping | None = None,
+    layer_overrides: dict[str, LayerClass | str] | None = None,
+    min_area_m2: float = 1.0,
+    max_area_m2: float | None = None,
+    allow_circular_curves: bool = False,
+    require_label: bool = False,
+    units_override: int | str | None = None,
+    include_wall_lines: bool = True,
+    tolerance: float = 1e-6,
+    gap_tolerance: float = 0.0,
+    label_tolerance: float = 0.25,
+    arc_angle_tolerance: float = math.radians(1.0),
+    diagnostics: list[dict[str, object]] | None = None,
+) -> RoomDetectionReport:
+    """Detect rooms **and** classify every candidate for human review.
+
+    This is the Phase 3 entry point.  It never silently promotes a polygon to a
+    room: each candidate carries ``candidate_status`` and ``candidate_reasons``.
+
+    Behaviour that differs from :func:`detect_spaces`:
+
+    * Wall polygonization only runs on layers classified as ``WALLS`` or
+      ``ROOM_BOUNDARIES``.  If no such layer exists, wall-line detection is
+      skipped and a ``NO_WALL_LAYER_IDENTIFIED`` diagnostic is recorded instead
+      of polygonizing the whole drawing.
+    * Room labels are only read from layers classified as ``TEXT_LABELS``.
+    * Polygons on furniture / door / window / column / dimension / text layers
+      are rejected even when they are perfectly closed.
+    * Polygons smaller than ``min_area_m2`` are rejected.
+    * When ``$INSUNITS`` is missing, every candidate is flagged
+      ``DRAWING_UNITS_UNVERIFIED``.  Passing ``units_override`` (a DXF unit code
+      or a unit name such as ``"meters"``) records that the reviewer confirmed
+      the drawing units, and areas are then scaled with that unit.
+    """
+
+    document = (
+        document_or_path
+        if isinstance(document_or_path, CadDocument)
+        else read_cad_file(document_or_path)
+    )
+
+    mapping = layer_mapping or build_layer_mapping(document.layers, layer_overrides)
+    collected: list[dict[str, object]] = []
+    wall_layers = mapping.wall_layers()
+    label_layers = mapping.label_layers()
+    if not label_layers:
+        collected.append(
+            {
+                "type": "no_label_layer_identified",
+                "message": (
+                    "No layer could be classified as TEXT_LABELS. Room labels will "
+                    "be read from any layer; confirm the label layer in review."
+                ),
+            }
+        )
+    effective_wall_detection = include_wall_lines
+    if include_wall_lines and not wall_layers:
+        effective_wall_detection = False
+        collected.append(
+            {
+                "type": "no_wall_layer_identified",
+                "message": (
+                    "No layer could be classified as WALLS or ROOM_BOUNDARIES. "
+                    "Wall-line room detection was skipped; classify the wall layer "
+                    "explicitly before relying on detected areas."
+                ),
+                "layers": list(mapping.classifications),
+            }
+        )
+
+    rooms = detect_spaces(
+        document,
+        include_wall_lines=effective_wall_detection,
+        wall_layers=wall_layers or None,
+        label_layers=label_layers or None,
+        label_tolerance=label_tolerance,
+        tolerance=tolerance,
+        gap_tolerance=gap_tolerance,
+        arc_angle_tolerance=arc_angle_tolerance,
+        diagnostics=collected,
+    )
+
+    units_status, units_note = _units_note(document)
+    units_verified = document.units_verified
+    scale = document.unit_scale_to_meters
+    units_source = "DRAWING" if units_verified else "UNVERIFIED"
+    resolved_units = document.units
+    if units_override is not None:
+        override_scale = unit_scale_to_meters(units_override)
+        if override_scale is None:
+            raise ValueError(
+                f"Unsupported drawing units {units_override!r}. "
+                f"Use a DXF unit code or one of the names: "
+                f"{', '.join(sorted({'meters', 'millimeters', 'centimeters', 'inches', 'feet'}))}."
+            )
+        code = unit_code_for(units_override)
+        resolved = unit_name(code) if code is not None else str(units_override)
+        units_status = "USER_CONFIRMED"
+        units_note = (
+            f"Units confirmed by the reviewer as {resolved} "
+            f"(scale to metres = {override_scale}); "
+            f"drawing header reported $INSUNITS={document.unit_code} ({document.units})."
+        )
+        units_verified = True
+        scale = override_scale
+        units_source = "USER_CONFIRMED"
+        resolved_units = resolved
+
+    for room in rooms:
+        classification = mapping.classification(room.effective_layer)
+        if units_source == "USER_CONFIRMED" and scale is not None:
+            # The detector scaled with the *drawing* units (possibly none).  The
+            # reviewer's confirmed units win, so rescale from the raw polygon.
+            room.area = float(room.polygon.area * scale * scale)
+            room.perimeter = float(room.polygon.length * scale)
+            room.unit_status = "VERIFIED"
+            room.drawing_units = resolved_units
+        area_m2 = room.area if scale is not None else None
+        decision = evaluate_room_candidate(
+            layer_class=classification.layer_class,
+            source=room.source,
+            area_m2=area_m2,
+            has_label=bool(room.label),
+            units_verified=units_verified,
+            geometry_valid=room.polygon.is_valid,
+            ambiguous=classification.is_ambiguous,
+            unconfirmed=classification.needs_user_confirmation,
+            min_area_m2=min_area_m2,
+            max_area_m2=max_area_m2,
+            allow_circular_curves=allow_circular_curves,
+        )
+        reasons = list(decision.reasons)
+        if require_label and not room.label:
+            reasons.append("LABEL_REQUIRED")
+            decision = RoomCandidateDecision(
+                status=CandidateStatus.NEEDS_REVIEW, reasons=tuple(reasons)
+            )
+        room.layer_class = classification.layer_class.value
+        room.candidate_status = decision.status.value
+        room.candidate_reasons = tuple(dict.fromkeys(reasons))
+
+    if diagnostics is not None:
+        diagnostics.extend(collected)
+
+    return RoomDetectionReport(
+        rooms=rooms,
+        layer_mapping=mapping,
+        diagnostics=collected,
+        units_status=units_status,
+        units_note=units_note,
+        min_area_m2=min_area_m2,
+        max_area_m2=max_area_m2,
+        units_source=units_source,
+    )

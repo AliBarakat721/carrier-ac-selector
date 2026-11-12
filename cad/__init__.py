@@ -2,7 +2,29 @@
 
 from .dxf_reader import CadDocument, CadEntity, read_dxf
 from .importer import DwgImportError, read_cad_file
-from .space_detector import RoomSpace, detect_spaces
+from .space_detector import RoomDetectionReport, RoomSpace, detect_spaces, detect_spaces_with_review
+from .layer_analyzer import (
+    CandidateStatus,
+    ClassificationConfidence,
+    LayerClass,
+    LayerClassification,
+    LayerMapping,
+    RoomCandidateDecision,
+    build_layer_mapping,
+    classify_layer,
+    classify_layers,
+    evaluate_room_candidate,
+    normalize_layer_name,
+    summarize_decisions,
+)
+from .room_review import (
+    ACCEPTED_STATUSES,
+    ReviewAction,
+    ReviewStatus,
+    RoomReviewRow,
+    RoomReviewSession,
+    room_key,
+)
 from .layer_manager import ensure_hvac_layers, validate_hvac_layers
 from .block_manager import (
     create_block_definition,
@@ -35,13 +57,41 @@ from .tag_config import (
     validate_tag_attributes,
     validate_unique_entity_ids,
 )
-from .workflow import RoomAssignment, build_indoor_placements, suggest_room_assignments
+from .workflow import RoomAssignment, build_indoor_placements, match_room_systems, suggest_room_assignments
+from .room_matching import (
+    AssignmentReason,
+    AssignmentStatus,
+    MatchingResult,
+    RoomMatch,
+    match_rooms_to_systems,
+    normalize_name,
+)
 
 __all__ = [
     "CadDocument",
     "CadEntity",
     "RoomSpace",
+    "RoomDetectionReport",
     "detect_spaces",
+    "detect_spaces_with_review",
+    "RoomReviewSession",
+    "RoomReviewRow",
+    "ReviewAction",
+    "ReviewStatus",
+    "ACCEPTED_STATUSES",
+    "room_key",
+    "CandidateStatus",
+    "ClassificationConfidence",
+    "LayerClass",
+    "LayerClassification",
+    "LayerMapping",
+    "RoomCandidateDecision",
+    "build_layer_mapping",
+    "classify_layer",
+    "classify_layers",
+    "evaluate_room_candidate",
+    "normalize_layer_name",
+    "summarize_decisions",
     "ensure_hvac_layers",
     "validate_hvac_layers",
     "create_block_definition",
@@ -73,4 +123,11 @@ __all__ = [
     "RoomAssignment",
     "build_indoor_placements",
     "suggest_room_assignments",
+    "match_room_systems",
+    "AssignmentStatus",
+    "AssignmentReason",
+    "RoomMatch",
+    "MatchingResult",
+    "match_rooms_to_systems",
+    "normalize_name",
 ]

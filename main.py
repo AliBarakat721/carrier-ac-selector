@@ -33,6 +33,7 @@ import logging
 import webbrowser
 import errno
 import tempfile
+from pathlib import Path
 from contextlib import contextmanager
 import pandas as pd
 import core
@@ -158,6 +159,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtGui import (QPixmap, QColor, QFont, QBrush, QImage,
                               QShortcut, QKeySequence)
+from ui.cad_workspace import CadWorkspace
 
 # Word report support
 try:
@@ -187,6 +189,28 @@ QMainWindow, QWidget {
     font-family: 'Segoe UI', Arial, sans-serif;
     font-size: 13px;
 }
+QFrame#app_header { background-color: #171c24; border-bottom: 1px solid #354252; }
+QLabel#brand_mark { color: #3288f4; font-size: 17px; font-weight: 800; letter-spacing: 2px; }
+QLabel#project_name { color: #e6edf5; font-size: 14px; font-weight: 600; padding-left: 14px; }
+QLabel#save_state { color: #24b889; font-size: 12px; padding-left: 12px; }
+QPushButton#header_button { background: transparent; color: #9aa8b8; padding: 5px 9px; font-weight: normal; }
+QPushButton#header_button:hover { color: #e6edf5; background: #252f3b; }
+QFrame#ribbon { background-color: #202833; border-bottom: 1px solid #354252; }
+QPushButton#ribbon_button { background: transparent; color: #9aa8b8; border-radius: 3px; padding: 7px 10px; font-weight: 600; }
+QPushButton#ribbon_button:hover, QPushButton#ribbon_button[active="true"] { background: #2d4055; color: #e6edf5; }
+QTabWidget#workspace_tabs::pane { border: none; }
+QTabWidget#workspace_tabs QTabBar::tab { background: #202833; color: #9aa8b8; padding: 8px 16px; border: none; }
+QTabWidget#workspace_tabs QTabBar::tab:selected { background: #3288f4; color: #ffffff; }
+QFrame#cad_toolbar, QFrame#cad_footer { background-color: #202833; border-bottom: 1px solid #354252; }
+QLabel#workspace_title { color: #e6edf5; font-weight: 800; letter-spacing: 1px; }
+QLabel#cad_status { color: #9aa8b8; padding-left: 12px; }
+QFrame#project_browser, QFrame#properties_inspector { background-color: #252f3b; border: none; }
+QLabel#panel_title { color: #9aa8b8; font-size: 11px; font-weight: 800; letter-spacing: 1px; padding-bottom: 8px; }
+QLabel#property_value { color: #e6edf5; }
+QFrame#cad_footer { border-top: 1px solid #354252; border-bottom: none; }
+QFrame#cad_footer QLabel { color: #9aa8b8; font-size: 11px; }
+QTreeWidget, QListWidget { background: #202833; color: #c8d3df; border: none; }
+QTreeWidget::item:selected, QListWidget::item:selected { background: #2d4055; color: #ffffff; }
 QPushButton {
     background-color: #1d4ed8;
     color: white;
@@ -1093,17 +1117,74 @@ class HAPToCarrierApp(QMainWindow):
         # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        self._set_status("Ready — upload a HAP screenshot or enter values manually.")
+        self._set_status("Ready — open a drawing or import a HAP report.")
 
-        # ── Root layout: horizontal splitter (left | right) ────
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.setChildrenCollapsible(False)
+        root = QWidget()
+        root_layout = QVBoxLayout(root)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
 
-        splitter.addWidget(self._build_left_panel())
-        splitter.addWidget(self._build_right_panel())
-        splitter.setSizes([300, 980])
+        # Application header: intentionally compact so the drawing remains the
+        # dominant surface at 1366px and above.
+        header = QFrame()
+        header.setObjectName("app_header")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(14, 8, 14, 8)
+        logo = QLabel("CARRIER")
+        logo.setObjectName("brand_mark")
+        header_layout.addWidget(logo)
+        project = QLabel("HVAC Design Studio  /  New Cairo Office Building")
+        project.setObjectName("project_name")
+        header_layout.addWidget(project)
+        saved = QLabel("●  Saved")
+        saved.setObjectName("save_state")
+        header_layout.addWidget(saved)
+        header_layout.addStretch()
+        for label in ("Undo", "Redo", "Settings"):
+            button = QPushButton(label)
+            button.setObjectName("header_button")
+            header_layout.addWidget(button)
+        root_layout.addWidget(header)
 
-        self.setCentralWidget(splitter)
+        ribbon = QFrame()
+        ribbon.setObjectName("ribbon")
+        ribbon_layout = QHBoxLayout(ribbon)
+        ribbon_layout.setContentsMargins(14, 5, 14, 5)
+        ribbon_layout.setSpacing(4)
+        for label in ("File", "Home", "Draw", "Modify", "Architecture", "HVAC", "Equipment", "HAP", "Analysis", "Annotate", "View", "Export"):
+            button = QPushButton(label)
+            button.setObjectName("ribbon_button")
+            if label == "Home":
+                button.setProperty("active", True)
+            ribbon_layout.addWidget(button)
+        ribbon_layout.addStretch()
+        root_layout.addWidget(ribbon)
+
+        self.workspace_tabs = QTabWidget()
+        self.workspace_tabs.setObjectName("workspace_tabs")
+        self.workspace_tabs.setDocumentMode(True)
+        self.workspace_tabs.setTabPosition(QTabWidget.North)
+
+        self.cad_workspace = CadWorkspace(Path(self._app_dir))
+        self.cad_workspace.request_open.connect(self.upload_cad)
+        self.cad_workspace.request_export.connect(self.export_cad_workflow)
+        self.workspace_tabs.addTab(self.cad_workspace, "CAD Workspace")
+
+        # Existing analyzer remains intact and is now deliberately presented as
+        # an engineering workspace instead of competing with the CAD canvas.
+        analyzer_page = QWidget()
+        analyzer_layout = QVBoxLayout(analyzer_page)
+        analyzer_layout.setContentsMargins(0, 0, 0, 0)
+        analyzer_splitter = QSplitter(Qt.Horizontal)
+        analyzer_splitter.setChildrenCollapsible(False)
+        analyzer_splitter.addWidget(self._build_left_panel())
+        analyzer_splitter.addWidget(self._build_right_panel())
+        analyzer_splitter.setSizes([300, 980])
+        analyzer_layout.addWidget(analyzer_splitter)
+        self.workspace_tabs.addTab(analyzer_page, "HAP & Equipment Analyzer")
+        self.workspace_tabs.setCurrentIndex(0)
+        root_layout.addWidget(self.workspace_tabs, 1)
+        self.setCentralWidget(root)
 
     # ── Left panel ─────────────────────────────────────────────
     def _build_left_panel(self) -> QScrollArea:
@@ -1833,6 +1914,13 @@ class HAPToCarrierApp(QMainWindow):
         self.cad_rooms = rooms
         self.cad_diagnostics = diagnostics
         self.cad_room_systems = suggest_room_assignments(rooms, self.systems)
+        if hasattr(self, "cad_workspace"):
+            self.cad_workspace.set_project_data(
+                document,
+                rooms,
+                self.cad_room_systems,
+                self.selected_units,
+            )
         self._open_cad_workspace(path)
         self._render_cad_rooms()
         if hasattr(self, "lbl_cad_landing_status"):
@@ -1867,6 +1955,10 @@ class HAPToCarrierApp(QMainWindow):
             self.cad_room_systems.pop(room_id, None)
         else:
             self.cad_room_systems[room_id] = selected
+        if hasattr(self, "cad_workspace"):
+            self.cad_workspace.refresh_assignments(
+                self.cad_room_systems, self.selected_units
+            )
         self._update_cad_export_state()
 
     def _render_cad_rooms(self):

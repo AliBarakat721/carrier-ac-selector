@@ -24,6 +24,9 @@ Desktop tool built with PySide6 that reads a HAP *Air System Sizing Summary* scr
 
 For the complete end-user workflow, see the [detailed User Guide](docs/USER_GUIDE.md).
 
+For room-level HAP extraction, thermal validation, source traceability, and
+centralized engineering unit conversions, see [HAP Integration](docs/HAP_INTEGRATION.md).
+
 ## Requirements
 
 - Python 3.10 or newer.

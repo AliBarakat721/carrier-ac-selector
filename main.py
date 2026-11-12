@@ -2001,6 +2001,7 @@ class HAPToCarrierApp(QMainWindow):
         # so exports default to G01.xlsx / G01_selected.xlsx / G01_multi.xlsx
         base = os.path.splitext(os.path.basename(path))[0].strip()
         self.source_basename = base
+        self.source_path = path
         self.current_system_name = ""  # reset old system name immediately
 
         # Reset batch state for the new report
@@ -2051,11 +2052,13 @@ class HAPToCarrierApp(QMainWindow):
         self.btn_upload.setEnabled(True)
         self.btn_upload.setText("📁  Upload HAP Report")
 
-        res = core.parse_hap_text(text)
+        res = core.parse_hap_text(text, source_file=getattr(self, "source_path", None))
         btu, cfm = res.btu, res.cfm
 
         # Batch: detect every system in this report (may be just one)
-        self.systems = core.parse_all_systems(text)
+        self.systems = core.parse_all_systems(
+            text, source_file=getattr(self, "source_path", None)
+        )
         self._render_batch()
         self._refresh_cad_workflow()
         # Single-system report → remember its name for export defaults

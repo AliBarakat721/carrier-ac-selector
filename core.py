@@ -175,159 +175,266 @@ def load_database(path: str) -> pd.DataFrame:
 
 
 # ── HAP parsing ───────────────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class SourceRef:
+    """Traceability for an extracted value in a report."""
+    source_file: str | None = None
+    page: int | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+    excerpt: str | None = None
+
+    @property
+    def location(self) -> str:
+        bits = []
+        if self.source_file:
+            bits.append(os.path.basename(self.source_file))
+        if self.page is not None:
+            bits.append(f"page {self.page}")
+        if self.line_start is not None:
+            bits.append(f"lines {self.line_start}-{self.line_end or self.line_start}")
+        return ", ".join(bits) or "NOT_VERIFIED"
+
+
+@dataclass
+class ExtractedValue:
+    value: object = None
+    unit: str | None = None
+    status: str = "MISSING"
+    source: SourceRef = field(default_factory=SourceRef)
+
+    @property
+    def verified(self) -> bool:
+        return self.status == "EXTRACTED" and self.value is not None
+
+
+@dataclass
+class ThermalValidation:
+    status: str = "NOT_VERIFIED"
+    total_btu: float | None = None
+    sensible_btu: float | None = None
+    latent_btu: float | None = None
+    difference_btu: float | None = None
+    difference_pct: float | None = None
+    message: str = "Thermal balance was not verified."
+
+
+@dataclass
+class HapRoom:
+    room_name: ExtractedValue = field(default_factory=ExtractedValue)
+    room_number: ExtractedValue = field(default_factory=ExtractedValue)
+    total_cooling_load: ExtractedValue = field(default_factory=ExtractedValue)
+    sensible_load: ExtractedValue = field(default_factory=ExtractedValue)
+    latent_load: ExtractedValue = field(default_factory=ExtractedValue)
+    heating_load: ExtractedValue = field(default_factory=ExtractedValue)
+    supply_airflow: ExtractedValue = field(default_factory=ExtractedValue)
+    room_area: ExtractedValue = field(default_factory=ExtractedValue)
+    zone: ExtractedValue = field(default_factory=ExtractedValue)
+    design_conditions: ExtractedValue = field(default_factory=ExtractedValue)
+    thermal_validation: ThermalValidation = field(default_factory=ThermalValidation)
+
+    @property
+    def name(self) -> str:
+        return str(self.room_name.value or self.room_number.value or "")
+
+    @property
+    def status(self) -> str:
+        required = (self.total_cooling_load, self.sensible_load, self.supply_airflow)
+        return "EXTRACTED" if all(v.verified for v in required) else "NOT_VERIFIED"
+
+
 @dataclass
 class HapResult:
-    btu: float = 0.0              # total cooling coil load, Btu/hr
-    cfm: float = 0.0              # cooling coil CFM
-    sensible_btu: float = 0.0     # sensible coil load, Btu/hr (0 = unknown)
+    # Legacy fields retained for existing selection/UI callers.
+    btu: float = 0.0
+    cfm: float = 0.0
+    sensible_btu: float = 0.0
     warnings: list = field(default_factory=list)
+    room: HapRoom | None = None
+    source: SourceRef = field(default_factory=SourceRef)
+    thermal_validation: ThermalValidation = field(default_factory=ThermalValidation)
 
     @property
     def ok(self) -> bool:
         return self.btu > 0 and self.cfm > 0 and not self.warnings
 
 
-_NUM = r'(?<!\d)(?<!\d\.)(\d+(?:\.\d+)?)'
-_LEADER = r'[^\n]{0,120}?'            # junk between label and value (dot leaders)
+_NUM = r'(?<!\d)(?<!\d\.)(\d+(?:[.,]\d+)?)'
+_LEADER = r'[^\n]{0,160}?'
+
+
+def _source_for(text: str, start: int, end: int, source_file=None) -> SourceRef:
+    before = text[:start]
+    page_matches = list(re.finditer(r'---\s*page\s+(\d+)', before, re.I))
+    page = int(page_matches[-1].group(1)) if page_matches else None
+    line_start = before.count("\n") + 1
+    line_end = line_start + text[start:end].count("\n")
+    excerpt = text[start:end].strip().replace("\n", " ")[:240]
+    return SourceRef(source_file, page, line_start, line_end, excerpt)
+
+
+def _float_token(value: str) -> float:
+    if "," in value and "." not in value:
+        value = value.replace(",", "") if re.fullmatch(r"\d{1,3}(,\d{3})+", value) else value.replace(",", ".")
+    elif "," in value and "." in value:
+        value = value.replace(",", "") if value.rfind(".") > value.rfind(",") else value.replace(".", "").replace(",", ".")
+    return float(value)
+
+
+def _value(pattern: str, text: str, *, source_file=None, unit=None,
+           flags=re.I | re.M, converter=None) -> ExtractedValue:
+    match = re.search(pattern, text, flags)
+    if not match:
+        return ExtractedValue(status="MISSING")
+    raw = match.group(1).strip()
+    try:
+        value = converter(raw) if converter else raw
+    except (TypeError, ValueError):
+        return ExtractedValue(raw, unit, "NOT_VERIFIED", _source_for(text, match.start(), match.end(), source_file))
+    return ExtractedValue(value, unit, "EXTRACTED", _source_for(text, match.start(), match.end(), source_file))
+
+
+def thermal_validate(total_btu: float | None, sensible_btu: float | None,
+                     latent_btu: float | None, *, tolerance_pct: float = 2.0) -> ThermalValidation:
+    values = (total_btu, sensible_btu, latent_btu)
+    if any(v is None or not math.isfinite(float(v)) for v in values):
+        return ThermalValidation(message="Total, sensible, and latent loads are required.")
+    difference = float(total_btu) - (float(sensible_btu) + float(latent_btu))
+    pct = abs(difference) / max(abs(float(total_btu)), 1.0) * 100.0
+    status = "VALID" if pct <= tolerance_pct else "WARNING"
+    message = ("QTotal = QSensible + QLatent verified within tolerance."
+               if status == "VALID" else
+               f"Thermal loads are inconsistent by {difference:g} Btu/h ({pct:.2f}%).")
+    return ThermalValidation(status, float(total_btu), float(sensible_btu),
+                             float(latent_btu), difference, pct, message)
 
 
 def _cooling_section(t: str) -> str:
-    # يتوقف عند بداية أي قسم تالٍ (تسخين، مروحة، هواء خارجي، أو بداية نظام جديد)
     m = re.search(
         r'Cooling\s+Co[a-z0-9]{0,3}l.*?(?=(?:Heating\s+Co[a-z0-9]{0,3}l|Supply\s+Fan|Outdoor\s+Air|Terminal\s+Unit|\bAir\s+System\s+Information|\bAir\s+System\s+Sizing\s+Summary)\b|\Z)',
-        t, re.I | re.S
-    )
-    return m.group(0) if m else ""  # إرجاع نص فارغ بدلاً من t لمنع تسريب أقسام أخرى
+        t, re.I | re.S)
+    return m.group(0) if m else ""
 
 
 def _normalize_rtf_ws(s: str) -> str:
-    """HAP's RTF output puts labels and their values on separate lines
-    joined by TAB+NEWLINE. Collapse those separators into double spaces
-    so the single-line leader patterns keep working unchanged across OSes.
-    """
     if not s:
         return ""
-    # Normalize Windows/Mac line endings (CRLF / CR -> LF)
     s = s.replace("\r\n", "\n").replace("\r", "\n")
-    s = s.replace("\t\n", "  ").replace("\n\t", "  ")
-    return s
+    return s.replace("\t\n", "  ").replace("\n\t", "  ")
 
 
-def parse_hap_text(text: str) -> HapResult:
-    """Extract cooling load (Btu/hr) and coil CFM from HAP summary text.
+def _load_value(text: str, label: str, *, source_file=None) -> ExtractedValue:
+    pattern = rf'{label}[^\n]*?{_NUM}\s*(MBH|Tons?|kW|Btu/?h|Btu/hr)'
+    m = re.search(pattern, text, re.I)
+    if not m:
+        return ExtractedValue(status="MISSING")
+    number = _float_token(m.group(1))
+    unit = m.group(2).lower()
+    from units import cooling_capacity_to_btu_h
+    normalized = cooling_capacity_to_btu_h(number, "tr" if unit.startswith("ton") else
+                                           "kw" if unit == "kw" else "btu/h")
+    if unit == "mbh":
+        normalized = number * 1000.0
+    return ExtractedValue(normalized, "Btu/h", "EXTRACTED",
+                          _source_for(text, m.start(), m.end(), source_file))
 
-    Rules (learned from real OCR output):
-      * only the *Central Cooling Coil* section is searched, so heating /
-        fan / ventilation numbers (CFM/person, Max coil load...) can't leak in
-      * the load comes from the labelled 'Total coil load' line; MBH is the
-        reference (Tons is rounded and only used to cross-check)
-      * there are NO generic fallbacks: if the labelled value can't be read we
-        return 0 plus a warning instead of guessing (a silent wrong value is
-        worse than an explicit failure)
-    """
-    res = HapResult()
-    t = re.sub(r'(\d),(\d{3})', r'\1\2', text or "")
-    t = _normalize_rtf_ws(t)         # ← RTF label-value join
-    cool = _cooling_section(t)
-    if not cool:
-        res.warnings.append("Cooling coil section not found in report.")
-        return res
 
-    # --- Total coil load (فحص جميع الأسطر المطابقة مع دعم الكلمات الملتصقة مثل coilload) ---
-    total_lines = [
-        line for line in cool.splitlines()
-        if re.search(r'\bTotal\b', line, re.I) and (
-            re.search(r'(?:coil|load|co[a-z0-9]{1,6}|loa[a-z0-9]{1,6})', line, re.I)
-            or re.search(r'\b(?:MBH|Tons?)\b', line, re.I)
-        ) and not re.search(r'\bcapacity\b', line, re.I)
-    ]
-    if not total_lines:
-        total_lines = [
-            line for line in cool.splitlines()
-            if re.search(r'\bTotal\b', line, re.I) and re.search(r'\bMBH\b', line, re.I)
-        ]
-
-    mbh = tons = None
-    for ln in total_lines:
-        if mbh is None:
-            m = re.search(_NUM + r'\s*MBH', ln, re.I)
-            if m:
-                mbh = float(m.group(1))
-        if tons is None:
-            m = re.search(_NUM + r'\s*Tons?', ln, re.I)
-            if m:
-                tons = float(m.group(1))
-        if mbh is not None and tons is not None:
-            break
-
-    if mbh is None and tons is None:
-        # label unreadable: do NOT guess from other lines
-        any_mbh = re.findall(_NUM + r'\s*MBH', cool, re.I)
-        if any_mbh:
-            res.warnings.append(
-                "Could not read the 'Total coil load' line "
-                "(other MBH values were seen but ignored). Enter it manually."
-            )
-        else:
-            res.warnings.append("Cooling load not found. Enter it manually.")
-    else:
-        if mbh is not None and tons is not None:
-            if abs(mbh / 12.0 - tons) > 0.06 * max(tons, 1.0) + 0.05:
-                # disagreement -> keep the larger (safe) one and warn
-                res.warnings.append(
-                    f"Tons ({tons:g}) and MBH ({mbh:g}) disagree - "
-                    "using the larger; please verify."
-                )
-                res.btu = max(mbh * 1000.0, tons * BTU_PER_TON)
-            else:
-                res.btu = mbh * 1000.0          # MBH is the precise value
-        elif mbh is not None:
-            res.btu = mbh * 1000.0
-        else:
-            res.btu = tons * BTU_PER_TON
-            res.warnings.append(
-                "Only the rounded Tons value was readable; "
-                "Btu/hr is approximate."
-            )
-
-    # --- Sensible load (مطابقة سطر الحمل المحسوس من نفس السطر) ---
-    m_sens_line = re.search(
-        r'(?m)^[^\n]*\bSensible\b[^\n]{0,40}?\b(?:coil|load|co[a-z0-9]{1,4}|loa[a-z0-9]{1,4})\b[^\n]*',
-        cool, re.I
+def _airflow_value(text: str, *, source_file=None) -> ExtractedValue:
+    m = re.search(r'(?:Coil\s*CFM[^\n]*?|Supply\s+Air[^\n]*?|Airflow[^\n]*?)'
+                  rf'{_NUM}\s*(CFM|L/s|m3/h|m³/h)', text, re.I)
+    if not m:
+        return ExtractedValue(status="MISSING")
+    from units import airflow_to_l_s, l_s_to_airflow
+    unit = m.group(2).lower().replace("³", "3")
+    raw = _float_token(m.group(1))
+    cfm = raw if unit == "cfm" else l_s_to_airflow(
+        airflow_to_l_s(raw, "l/s" if unit == "l/s" else "m3/h"), "cfm"
     )
-    if not m_sens_line:
-        m_sens_line = re.search(r'(?m)^[^\n]*\bSensible\b[^\n]*\bMBH\b[^\n]*', cool, re.I)
-    if m_sens_line:
-        m_s = re.search(_NUM + r'\s*MBH', m_sens_line.group(0), re.I)
-        if m_s:
-            res.sensible_btu = float(m_s.group(1)) * 1000.0
-            if res.btu and res.sensible_btu > res.btu * 1.02:
-                res.warnings.append("Sensible load exceeds total load - OCR error?")
+    return ExtractedValue(cfm, "CFM", "EXTRACTED", _source_for(text, m.start(), m.end(), source_file))
 
-    # --- coil CFM ---
-    patterns = [
-        r'Coil\s*CFM\s+at\s+[A-Za-z]{3}\s*\d{0,4}',
-        r'Max\s+block\s+CFM',
-        r'Sum\s+of\s+peak\s+zone\s+CFM',
-    ]
-    vals = []
-    for p in patterns:
-        m = re.search(p + _LEADER + r'(?<!\d)(?<!\d\.)(\d{2,6})\D{0,3}CFM\b(?!\s*/)', cool, re.I)
-        if m:
-            v = float(m.group(1))
-            if 50 <= v <= 200_000:
-                vals.append(v)
-    if vals:
-        res.cfm = Counter(vals).most_common(1)[0][0]
-        if len(set(vals)) > 1:
-            res.warnings.append(
-                f"CFM lines disagree ({', '.join(f'{v:g}' for v in vals)}) - "
-                "please verify."
-            )
+
+def _room_blocks(text: str) -> list[str]:
+    lines = text.splitlines()
+    # Prefer a room/space number as the record boundary.  Room Name and Zone
+    # Name are fields inside that record, not new records.
+    starts = [i for i, line in enumerate(lines) if re.search(
+        r'\b(?:Room|Space)\s+(?:Number|No\.?)\b', line, re.I)]
+    if not starts:
+        starts = [i for i, line in enumerate(lines) if re.search(
+            r'\b(?:Room|Space)\s+Name\b', line, re.I)]
+    if not starts:
+        return [text]
+    blocks = []
+    for j, i in enumerate(starts):
+        page_marker = next(
+            (lines[k] for k in range(i - 1, -1, -1)
+             if re.search(r'---\s*page\s+\d+', lines[k], re.I)),
+            None,
+        )
+        end = starts[j + 1] if j + 1 < len(starts) else len(lines)
+        block = lines[i:end]
+        if page_marker and (not block or block[0] != page_marker):
+            block = [page_marker] + block
+        blocks.append("\n".join(block))
+    return blocks
+
+
+def parse_hap_room(text: str, *, source_file: str | None = None) -> HapRoom:
+    text = _normalize_rtf_ws(text or "")
+    room_name = _value(r'(?:Room\s+Name|Space\s+Name)\s*[:#]?\s*([^\n]+)', text, source_file=source_file)
+    room_number = _value(r'(?:Room\s+Number|Space\s+Number|Room\s+No\.?)\s*[:#]?\s*([^\n]+)', text, source_file=source_file)
+    total = _load_value(text, r'(?:Total\s+(?:cooling|coil)\s+load|Cooling\s+load)', source_file=source_file)
+    sensible = _load_value(text, r'Sensible\s+(?:cooling\s+)?(?:load|coil\s+load)', source_file=source_file)
+    latent = _load_value(text, r'Latent\s+(?:cooling\s+)?(?:load|coil\s+load)', source_file=source_file)
+    heating = _load_value(text, r'(?:Total\s+)?Heating\s+(?:load|coil\s+load)', source_file=source_file)
+    airflow = _airflow_value(text, source_file=source_file)
+    area = _value(r'(?:Room\s+Area|Area)\s*[:#]?\s*' + _NUM + r'\s*(m2|m²|ft2|ft²)', text, source_file=source_file, unit="m2")
+    if area.verified:
+        from units import area_to_m2
+        area.value = area_to_m2(area.value, "ft2" if area.unit.lower().startswith("ft") else "m2")
+    zone = _value(r'(?:Zone\s+(?:Name|Number)|Zone)\s*[:#]?\s*([^\n]+)', text, source_file=source_file)
+    design = _value(r'(Design\s+Conditions?[^\n]*)', text, source_file=source_file)
+    validation = thermal_validate(total.value if total.verified else None,
+                                  sensible.value if sensible.verified else None,
+                                  latent.value if latent.verified else None)
+    return HapRoom(room_name, room_number, total, sensible, latent, heating,
+                   airflow, area, zone, design, validation)
+
+
+def parse_hap_rooms(text: str, *, source_file: str | None = None) -> list[HapRoom]:
+    """Extract room-level loads from common HAP room/space report layouts."""
+    rooms = [parse_hap_room(block, source_file=source_file) for block in _room_blocks(text or "")]
+    return [room for room in rooms if room.room_name.verified or room.room_number.verified]
+
+
+def parse_hap_text(text: str, *, source_file: str | None = None) -> HapResult:
+    """Extract legacy coil values and expose room/thermal/provenance data."""
+    res = HapResult(source=SourceRef(source_file))
+    t = re.sub(r'(\d),(\d{3})', r'\1\2', _normalize_rtf_ws(text or ""))
+    cool = _cooling_section(t) or t
+    room = parse_hap_room(t, source_file=source_file)
+    res.room = room
+    if room.total_cooling_load.verified:
+        res.btu = float(room.total_cooling_load.value)
+    if room.sensible_load.verified:
+        res.sensible_btu = float(room.sensible_load.value)
+    if room.supply_airflow.verified:
+        res.cfm = float(room.supply_airflow.value)
     else:
+        for pattern in (r'Max\s+block\s+CFM', r'Sum\s+of\s+peak\s+zone\s+CFM'):
+            m = re.search(pattern + _LEADER + rf'(\d{{2,6}})\D{{0,3}}CFM\b', cool, re.I)
+            if m:
+                res.cfm = float(m.group(1)); break
+    res.thermal_validation = room.thermal_validation
+    if res.btu <= 0:
+        res.warnings.append("Cooling load not found. Enter it manually.")
+    if res.cfm <= 0:
         res.warnings.append("Coil CFM not found. Enter it manually.")
+    if res.sensible_btu > res.btu > 0:
+        res.warnings.append("Sensible load exceeds total load - OCR error?")
+    if res.thermal_validation.status == "WARNING":
+        res.warnings.append(res.thermal_validation.message)
     return res
-
 
 # ── Selection ─────────────────────────────────────────────────────────────────
 def _apply_category_type(df, category, type_, power_supply=None, series=None):
@@ -520,7 +627,7 @@ _SYSTEM_SUMMARY_HEADER_LENIENT = re.compile(
     re.I)
 
 
-def parse_all_systems(text: str) -> list:
+def parse_all_systems(text: str, *, source_file: str | None = None) -> list:
     """Parse EVERY air system in a full HAP "Systems Design Report".
 
     The header 'Air System Sizing Summary for <name>' repeats once per
@@ -552,7 +659,7 @@ def parse_all_systems(text: str) -> list:
         end = matches[i + 1].start() if i + 1 < len(matches) else len(t)
         chunk = t[m.start():end]
 
-        r = parse_hap_text(chunk)
+        r = parse_hap_text(chunk, source_file=source_file)
         load = SystemLoad(name, r.btu, r.cfm, r.sensible_btu, r.warnings)
 
         prev = by_name.get(name)

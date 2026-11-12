@@ -161,6 +161,7 @@ from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtGui import (QPixmap, QColor, QFont, QBrush, QImage,
                               QShortcut, QKeySequence)
 from ui.cad_workspace import CadWorkspace
+from ui.selection_workspace import SelectionWorkspace
 
 # Word report support
 try:
@@ -1173,9 +1174,20 @@ class HAPToCarrierApp(QMainWindow):
         self.cad_workspace.request_export.connect(self.export_cad_workflow)
         self.workspace_tabs.addTab(self.cad_workspace, "CAD Workspace")
 
+        self.selection_workspace = SelectionWorkspace(Path(self._app_dir))
+        self.selection_workspace.model_requested.connect(
+            self._on_selection_workspace_model
+        )
+        self.selection_workspace.request_analyzer.connect(
+            lambda: self.workspace_tabs.setCurrentWidget(self.analyzer_workspace)
+        )
+        self.selection_workspace.set_catalog(self.df, self.selected_units)
+        self.workspace_tabs.addTab(self.selection_workspace, "Selection Workspace")
+
         # Existing analyzer remains intact and is now deliberately presented as
         # an engineering workspace instead of competing with the CAD canvas.
         analyzer_page = QWidget()
+        self.analyzer_workspace = analyzer_page
         analyzer_layout = QVBoxLayout(analyzer_page)
         analyzer_layout.setContentsMargins(0, 0, 0, 0)
         analyzer_splitter = QSplitter(Qt.Horizontal)
@@ -2803,6 +2815,10 @@ class HAPToCarrierApp(QMainWindow):
         self.current_btu = s.btu
         self.current_cfm = s.cfm
         self.current_sensible = s.sensible_btu
+        if hasattr(self, "selection_workspace"):
+            self.selection_workspace.set_context(
+                self.current_system_name, self.current_btu, self.current_cfm
+            )
         self.input_btu.setText(f"{s.btu:,.0f}" if s.btu > 0 else "")
         self.input_cfm.setText(f"{s.cfm:,.0f}" if s.cfm > 0 else "")
         self.input_sensible.setText(
@@ -3915,6 +3931,33 @@ class HAPToCarrierApp(QMainWindow):
     #  [NEW / OPTIONAL]  Selection Cart
     #  لا يؤثر على Export Picked / Export All / Export Selected
     # ══════════════════════════════════════════════════════════════
+    def _on_selection_workspace_model(self, row_data, system_name: str):
+        """Store a catalogue-first choice using the same cart as the Analyzer."""
+        if row_data is None:
+            return
+        model_name = str(row_data.get("System Model", "")).strip()
+        if not model_name:
+            self._set_status("Selection Workspace returned a row without a System Model.")
+            return
+        effective_btu = float(row_data.get("Cooling Capacity (Btu/hr)", 0) or 0)
+        effective_btu *= 1.0 - self.spin_derate.value() / 100.0
+        existed = system_name in self.selected_units
+        self.selected_units[system_name] = {
+            "units": 1,
+            "row": row_data,
+            "effective_btu": effective_btu,
+            "load_btu": self.current_btu,
+            "load_cfm": self.current_cfm,
+            "load_sensible": self.current_sensible,
+        }
+        self._render_selected_table()
+        self.selection_workspace.set_selected_units(self.selected_units)
+        self._refresh_cad_workflow()
+        verb = "updated" if existed else "added"
+        self._set_status(
+            f"Selection Workspace {verb}: {model_name} → {system_name}"
+        )
+
     def _add_to_selection(self):
         """Add the picked (or table-selected) row to the selection cart."""
         df = self.current_results
@@ -4098,6 +4141,8 @@ class HAPToCarrierApp(QMainWindow):
         self.btn_export_cart.setEnabled(n > 0)
         self.btn_remove_cart.setEnabled(n > 0)
         self.btn_clear_cart.setEnabled(n > 0)
+        if hasattr(self, "selection_workspace"):
+            self.selection_workspace.set_selected_units(self.selected_units)
         self._elec_sync_from_cart()
 
     def _remove_from_cart(self):

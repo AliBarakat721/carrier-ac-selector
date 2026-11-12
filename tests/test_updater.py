@@ -18,11 +18,14 @@ REQUIRED_FILES = (
     "version.py",
     "apply_update.ps1",
 )
+CAD_FILES = tuple(f"cad/{name}" for name in updater.ALLOWED_CAD_FILES)
 
 
 def _write_valid_archive(path, extra_files=None):
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name in REQUIRED_FILES:
+            archive.writestr(name, "# test package\n")
+        for name in CAD_FILES:
             archive.writestr(name, "# test package\n")
         for name, payload in (extra_files or {}).items():
             archive.writestr(name, payload)
@@ -132,6 +135,8 @@ def test_unexpected_directory_is_rejected(tmp_path):
     with zipfile.ZipFile(archive, "w") as zf:
         for name in REQUIRED_FILES:
             zf.writestr(name, "content")
+        for name in CAD_FILES:
+            zf.writestr(name, "content")
         zf.writestr("payload/", "")
     with pytest.raises(UpdateError, match="Unexpected directory"):
         updater._validate_archive(archive)
@@ -149,6 +154,8 @@ def test_duplicate_case_insensitive_paths_are_rejected(tmp_path):
     archive = tmp_path / "duplicate.zip"
     with zipfile.ZipFile(archive, "w") as zf:
         for name in REQUIRED_FILES:
+            zf.writestr(name, "content")
+        for name in CAD_FILES:
             zf.writestr(name, "content")
         zf.writestr("MAIN.py", "different content")
     with pytest.raises(UpdateError, match="duplicate file paths"):

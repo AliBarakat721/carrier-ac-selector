@@ -48,4 +48,6 @@ from hap.parser import (  # noqa: F401
     _normalize_rtf_ws,
     parse_all_systems,
     parse_hap_text,
+    SourceRef, ExtractedValue, ThermalValidation, HapRoom,
+    parse_hap_room, parse_hap_rooms, thermal_validate,
 )

@@ -10,10 +10,10 @@ for an outdoor-unit location.
 from __future__ import annotations
 
 import math
-import re
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
+from .room_matching import MatchingResult, match_rooms_to_systems
 from .space_detector import RoomSpace
 
 
@@ -32,37 +32,32 @@ def _text(value: object) -> str:
     return "" if value.casefold() in {"none", "nan", "null"} else value
 
 
-def _key(value: object) -> str:
-    return re.sub(r"[^a-z0-9]+", "", _text(value).casefold())
-
-
 def suggest_room_assignments(
     rooms: Sequence[RoomSpace],
     systems: Sequence[object],
 ) -> dict[str, str]:
-    """Suggest, but do not force, room-to-system assignments.
+    """Return the rooms that are unambiguously matched to a system by name.
 
-    Exact label/name matches win. If the counts are equal, the remaining rooms
-    and systems are paired in stable drawing/report order. With unequal counts,
-    unmatched rooms remain blank for explicit user mapping in the UI.
+    This is the legacy, dictionary-shaped view of
+    :func:`cad.room_matching.match_rooms_to_systems`.  It contains **only**
+    rooms whose name matches exactly one system after normalisation.  Rooms are
+    never paired by drawing order or report order, and duplicate names are never
+    resolved by picking the first candidate.
+
+    Callers that need the full picture — unmatched rooms, unused systems, and
+    the reason a room is blank — should use :func:`match_room_systems` instead.
     """
 
-    system_names = [_text(getattr(system, "name", system)) for system in systems]
-    result: dict[str, str] = {}
-    unused = list(system_names)
-    for room in rooms:
-        label = _key(room.label)
-        if not label:
-            continue
-        match = next((name for name in unused if _key(name) == label), None)
-        if match:
-            result[room.room_id] = match
-            unused.remove(match)
-    remaining_rooms = [room for room in rooms if room.room_id not in result]
-    if len(remaining_rooms) == len(unused):
-        for room, system_name in zip(remaining_rooms, unused):
-            result[room.room_id] = system_name
-    return result
+    return match_rooms_to_systems(rooms, systems).matched
+
+
+def match_room_systems(
+    rooms: Sequence[RoomSpace],
+    systems: Sequence[object],
+) -> MatchingResult:
+    """Full, explicit room-to-system matching result (statuses and reasons)."""
+
+    return match_rooms_to_systems(rooms, systems)
 
 
 def _row_value(row: object, *names: str, default: object = "") -> object:

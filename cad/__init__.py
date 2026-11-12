@@ -2,7 +2,21 @@
 
 from .dxf_reader import CadDocument, CadEntity, read_dxf
 from .importer import DwgImportError, read_cad_file
-from .space_detector import RoomSpace, detect_spaces
+from .space_detector import RoomDetectionReport, RoomSpace, detect_spaces, detect_spaces_with_review
+from .layer_analyzer import (
+    CandidateStatus,
+    ClassificationConfidence,
+    LayerClass,
+    LayerClassification,
+    LayerMapping,
+    RoomCandidateDecision,
+    build_layer_mapping,
+    classify_layer,
+    classify_layers,
+    evaluate_room_candidate,
+    normalize_layer_name,
+    summarize_decisions,
+)
 from .layer_manager import ensure_hvac_layers, validate_hvac_layers
 from .block_manager import (
     create_block_definition,
@@ -41,7 +55,21 @@ __all__ = [
     "CadDocument",
     "CadEntity",
     "RoomSpace",
+    "RoomDetectionReport",
     "detect_spaces",
+    "detect_spaces_with_review",
+    "CandidateStatus",
+    "ClassificationConfidence",
+    "LayerClass",
+    "LayerClassification",
+    "LayerMapping",
+    "RoomCandidateDecision",
+    "build_layer_mapping",
+    "classify_layer",
+    "classify_layers",
+    "evaluate_room_candidate",
+    "normalize_layer_name",
+    "summarize_decisions",
     "ensure_hvac_layers",
     "validate_hvac_layers",
     "create_block_definition",

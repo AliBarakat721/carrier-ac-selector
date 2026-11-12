@@ -55,6 +55,20 @@ def _existing_references(document: object, tag_type: str) -> dict[str, object]:
     return result
 
 
+def _is_export_artifact(document: object) -> bool:
+    """True when the drawing already carries HVAC tag blocks.
+
+    Such a file was produced by this exporter, so writing to it again is an
+    idempotent update rather than destruction of an original drawing.
+    """
+
+    tag_blocks = {tag_block_name(tag_type) for tag_type in ("indoor_unit", "outdoor_unit", "pipe_label", "room_label")}
+    return any(
+        str(reference.dxf.name) in tag_blocks
+        for reference in document.modelspace().query("INSERT")
+    )
+
+
 def _update_or_insert(
     document: object,
     tag_type: str,
@@ -184,6 +198,20 @@ def export_hvac_dxf(
         raise ValueError("DXF export validation failed: " + "; ".join(errors))
 
     destination = Path(output)
+    source_path = Path(source)
+    try:
+        same_file = destination.exists() and destination.resolve() == source_path.resolve()
+    except OSError:  # pragma: no cover - unreadable path, let the write fail later
+        same_file = False
+    if same_file and not _is_export_artifact(document):
+        raise ValueError(
+            "Refusing to export over the source drawing: "
+            f"{source_path}. The source CAD file must stay unchanged. "
+            "Choose a different output path (for example "
+            f"'{source_path.with_name(source_path.stem + '_HVAC' + source_path.suffix)}'). "
+            "Re-exporting onto a file that already contains HVAC tag blocks is "
+            "allowed, because that file is an export artifact, not an original."
+        )
     destination.parent.mkdir(parents=True, exist_ok=True)
     schedule_destination = Path(schedule_path) if schedule_path else None
     with tempfile.NamedTemporaryFile(

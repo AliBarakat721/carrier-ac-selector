@@ -14,6 +14,8 @@ jobs:
     steps:
       - name: Check out tagged source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -43,7 +45,14 @@ jobs:
         run: |
           python -m pip install -r requirements-dev.txt
           if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
-          python -m py_compile core.py main.py electrical_engine.py ocr_engine.py roi_tab.py updater.py version.py cad/*.py
+          $packageDirs = @(@("cad", "engineering", "equipment", "hap", "reports", "ui") |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Container })
+          $files = @()
+          if ($packageDirs.Count -gt 0) {
+            $files = @(Get-ChildItem -Path $packageDirs -Filter *.py -File -Recurse |
+              ForEach-Object { $_.FullName })
+          }
+          python -m py_compile core.py main.py electrical_engine.py ocr_engine.py roi_tab.py updater.py version.py $files
           if ($LASTEXITCODE -ne 0) { throw "Python compilation failed." }
           python -m pytest -q
           if ($LASTEXITCODE -ne 0) { throw "Tests failed; refusing to publish this release." }
@@ -61,14 +70,10 @@ jobs:
             Set-Content -LiteralPath (Join-Path $stage $name) -Value "# validation fixture"
           }
           Set-Content -LiteralPath (Join-Path $stage "data/Carrier_AC_Database.xlsx") -Value "fixture"
-          New-Item -ItemType Directory -Path (Join-Path $stage "cad") -Force | Out-Null
-          foreach ($name in @("__init__.py", "block_manager.py", "dxf_exporter.py", "dxf_reader.py", "importer.py", "layer_manager.py", "schedule_builder.py", "space_detector.py", "tag_config.py", "workflow.py")) {
-            Set-Content -LiteralPath (Join-Path $stage ("cad/" + $name)) -Value "# validation fixture"
-          }
           $validationZip = Join-Path $env:RUNNER_TEMP "carrier-updater-validation.zip"
           Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $validationZip -Force
           & "$PWD/apply_update.ps1" -Archive $validationZip -TargetDir "$PWD" -WaitPid -1 -ValidateOnly
-          if (-not $?) { throw "Windows update archive validation smoke test failed." }
+          if ($LASTEXITCODE -ne 0) { throw "Windows update archive validation smoke test failed." }
 
       - name: Build Windows update package
         shell: pwsh
@@ -91,19 +96,85 @@ jobs:
             throw "The application data directory is missing."
           }
           Copy-Item -LiteralPath "data" -Destination (Join-Path $stage "data") -Recurse
-          if (-not (Test-Path "cad" -PathType Container)) {
-            throw "The CAD package directory is missing."
-          }
-          $cadStage = Join-Path $stage "cad"
-          New-Item -ItemType Directory -Path $cadStage -Force | Out-Null
-          $cadFiles = Get-ChildItem -LiteralPath "cad" -Filter "*.py" -File
-          foreach ($file in $cadFiles) {
-            Copy-Item -LiteralPath $file.FullName -Destination $cadStage
+          foreach ($directory in @("cad", "engineering", "equipment", "hap", "reports", "ui")) {
+            if (Test-Path -LiteralPath $directory -PathType Container) {
+              $sourceFiles = Get-ChildItem -LiteralPath $directory -Filter *.py -File -Recurse |
+                Where-Object { $_.FullName -notmatch '[\\/]__pycache__[\\/]' }
+              foreach ($sourceFile in $sourceFiles) {
+                $relative = [System.IO.Path]::GetRelativePath($PWD, $sourceFile.FullName)
+                $destination = Join-Path $stage $relative
+                New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
+                Copy-Item -LiteralPath $sourceFile.FullName -Destination $destination
+              }
+            }
           }
           $archive = Join-Path $PWD "CarrierACSelector-Windows.zip"
           Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $archive -CompressionLevel Optimal
           $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  CarrierACSelector-Windows.zip" | Set-Content -Path (Join-Path $PWD "SHA256SUMS.txt") -Encoding ascii
+
+      - name: Test fresh v2.0.1 install and real in-place update
+        shell: pwsh
+        run: |
+          $packageDirs = @(@("cad", "engineering", "equipment", "hap", "reports", "ui") |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Container })
+          if ($packageDirs.Count -eq 0) {
+          $legacy = Join-Path $env:RUNNER_TEMP "carrier-v2.0.1-install"
+          git worktree add --detach $legacy v2.0.1
+          if ($LASTEXITCODE -ne 0) { throw "Could not prepare the historical v2.0.1 installation." }
+          if (Test-Path -LiteralPath (Join-Path $legacy ".venv")) {
+            throw "Historical install unexpectedly already has a virtual environment; test setup is not isolated."
+          }
+          Push-Location $legacy
+          try {
+            & .\setup.ps1
+            if ($LASTEXITCODE -ne 0) { throw "Fresh historical Windows installation failed." }
+          } finally {
+            Pop-Location
+          }
+          $legacyVersion = (& (Join-Path $legacy ".venv\Scripts\python.exe") -c "from version import APP_VERSION; print(APP_VERSION)").Trim()
+          $releaseVersion = (& python -c "from version import APP_VERSION; print(APP_VERSION)").Trim()
+          if ([version]$releaseVersion -le [version]$legacyVersion) {
+            throw "The release ($releaseVersion) is not newer than the legacy install ($legacyVersion); cannot claim an upgrade test."
+          }
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $downloadDir = Join-Path $env:RUNNER_TEMP "carrier-upgrade-download"
+          New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
+          $upgradeArchive = Join-Path $downloadDir "CarrierACSelector-Windows.zip"
+          Copy-Item -LiteralPath (Join-Path $PWD "CarrierACSelector-Windows.zip") -Destination $upgradeArchive
+          & (Join-Path $legacy "apply_update.ps1") -Archive $upgradeArchive -TargetDir $legacy -WaitPid -1 -Restart
+          if ($LASTEXITCODE -ne 0) { throw "The historical updater failed to apply the real release package." }
+          $updatedPython = Join-Path $legacy ".venv\Scripts\python.exe"
+          $importModules = @("main", "core", "updater") + $packageDirs
+          $importStatement = "import " + ($importModules -join ", ") + "; from version import APP_VERSION; print(APP_VERSION)"
+          & $updatedPython -c $importStatement
+          if ($LASTEXITCODE -ne 0) { throw "The updated installation could not import the application and CAD package." }
+          } else {
+            Write-Host "Legacy v2.0.1 cannot accept package directories: using the documented clean-folder migration path."
+            $migration = Join-Path $env:RUNNER_TEMP "carrier-manual-migration-install"
+            New-Item -ItemType Directory -Path $migration -Force | Out-Null
+            $releaseStage = Join-Path $env:RUNNER_TEMP "carrier-release"
+            Copy-Item -Path (Join-Path $releaseStage "*") -Destination $migration -Recurse -Force
+            Push-Location $migration
+            try {
+              & .\setup.ps1
+              if ($LASTEXITCODE -ne 0) { throw "Fresh installation for the documented migration path failed." }
+            } finally {
+              Pop-Location
+            }
+            $env:QT_QPA_PLATFORM = "offscreen"
+            $downloadDir = Join-Path $env:RUNNER_TEMP "carrier-migration-update-download"
+            New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
+            $upgradeArchive = Join-Path $downloadDir "CarrierACSelector-Windows.zip"
+            Copy-Item -LiteralPath (Join-Path $PWD "CarrierACSelector-Windows.zip") -Destination $upgradeArchive
+            & (Join-Path $migration "apply_update.ps1") -Archive $upgradeArchive -TargetDir $migration -WaitPid -1 -Restart
+            if ($LASTEXITCODE -ne 0) { throw "The new updater failed its post-migration real update test." }
+            $updatedPython = Join-Path $migration ".venv\Scripts\python.exe"
+            $importModules = @("main", "core", "updater") + $packageDirs
+            $importStatement = "import " + ($importModules -join ", ") + "; from version import APP_VERSION; print(APP_VERSION)"
+            & $updatedPython -c $importStatement
+            if ($LASTEXITCODE -ne 0) { throw "The manually migrated installation could not import the application packages." }
+          }
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

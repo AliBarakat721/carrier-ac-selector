@@ -975,6 +975,7 @@ class HAPToCarrierApp(QMainWindow):
         self.cad_rooms = []
         self.cad_diagnostics = []
         self.cad_room_systems = {}
+        self.cad_workspace_tab = None
 
         self._build_ui()
         self.setAcceptDrops(True)
@@ -1620,7 +1621,7 @@ class HAPToCarrierApp(QMainWindow):
 
         # ── CAD + HAP workflow tab ─────────────────────────────
         self.cad_tab = self._build_cad_tab()
-        self.tabs.addTab(self.cad_tab, "🧭  CAD Workflow")
+        self.tabs.addTab(self.cad_tab, "📐  CAD Start")
 
         # ── Keyboard shortcuts for Systems navigation ──
         # Scoped to the Systems table so they don't fire elsewhere.
@@ -1670,39 +1671,105 @@ class HAPToCarrierApp(QMainWindow):
     def _build_cad_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.setContentsMargins(0, 4, 0, 0)
-        layout.setSpacing(6)
+        layout.setContentsMargins(24, 28, 24, 28)
+        layout.setSpacing(14)
 
+        title = QLabel("CAD Design Workspace")
+        title.setObjectName("lbl_app_title")
+        layout.addWidget(title)
         intro = QLabel(
-            "ارفع ملف DWG أو DXF ثم ارفع تقرير HAP من زر HAP المعتاد. "
-            "بعد اختيار الوحدات من Results/Systems، اربط كل Room بالـ HAP System "
-            "واضغط Export Indoor Units."
+            "ارفع ملف DWG أو DXF لفتح Workspace مستقل للعمل على المخطط. "
+            "سيظل الـ Workspace مرتبطًا بتقرير HAP، الوحدات المختارة، والسلة الحالية."
         )
         intro.setWordWrap(True)
-        intro.setStyleSheet("color: #93c5fd; padding: 4px;")
-        intro.setToolTip(
-            "DWG files are converted temporarily to DXF using ODA File Converter. "
-            "The original drawing is never overwritten."
-        )
+        intro.setStyleSheet("color: #cbd5e1; font-size: 14px; padding: 2px 0;")
         layout.addWidget(intro)
+
+        card = QFrame()
+        card.setFrameShape(QFrame.StyledPanel)
+        card.setStyleSheet(
+            "QFrame { background-color: #111827; border: 1px solid #374151; "
+            "border-radius: 10px; padding: 12px; }"
+        )
+        card_layout = QVBoxLayout(card)
+        card_layout.setSpacing(8)
+        card_title = QLabel("Start a CAD review")
+        card_title.setStyleSheet("color: #93c5fd; font-size: 15px; font-weight: bold;")
+        card_layout.addWidget(card_title)
+        steps = QLabel(
+            "1. Upload the floor plan\n"
+            "2. Review detected rooms and geometry diagnostics\n"
+            "3. Link rooms to HAP systems and selected Carrier units\n"
+            "4. Export only after reviewing the mapping"
+        )
+        steps.setStyleSheet("color: #9ca3af; line-height: 1.5; padding: 4px;")
+        card_layout.addWidget(steps)
+        self.lbl_cad_landing_status = QLabel(
+            "No CAD file loaded — upload a DWG or DXF floor plan to begin."
+        )
+        self.lbl_cad_landing_status.setWordWrap(True)
+        self.lbl_cad_landing_status.setStyleSheet("color: #6b7280; padding: 4px 0;")
+        card_layout.addWidget(self.lbl_cad_landing_status)
+        layout.addWidget(card)
 
         buttons = QHBoxLayout()
         self.btn_cad_upload = QPushButton("📐  Upload DWG / DXF")
         self.btn_cad_upload.setObjectName("btn_pick")
         self.btn_cad_upload.clicked.connect(self.upload_cad)
         buttons.addWidget(self.btn_cad_upload)
+        buttons.addStretch()
+        layout.addLayout(buttons)
+
+        note = QLabel(
+            "The original DWG/DXF is never overwritten. Outdoor units and piping "
+            "remain separate engineering steps until they are explicitly approved."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #f59e0b; font-size: 11px; padding: 4px 0;")
+        layout.addWidget(note)
+        layout.addStretch()
+        return tab
+
+    def _build_cad_workspace_tab(self, path: str):
+        """Build the file-specific CAD workspace while reusing shared project state."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(8)
+
+        header = QFrame()
+        header.setFrameShape(QFrame.StyledPanel)
+        header.setStyleSheet(
+            "QFrame { background-color: #111827; border: 1px solid #374151; "
+            "border-radius: 8px; padding: 6px; }"
+        )
+        header_layout = QVBoxLayout(header)
+        header_layout.setSpacing(4)
+        title_row = QHBoxLayout()
+        title = QLabel(f"CAD Workspace — {os.path.basename(path)}")
+        title.setObjectName("lbl_app_title")
+        title.setToolTip(path)
+        title_row.addWidget(title)
+        title_row.addStretch()
+        self.btn_cad_workspace_upload = QPushButton("Open another CAD file")
+        self.btn_cad_workspace_upload.setObjectName("btn_pick")
+        self.btn_cad_workspace_upload.clicked.connect(self.upload_cad)
+        title_row.addWidget(self.btn_cad_workspace_upload)
+        header_layout.addLayout(title_row)
+        self.lbl_cad_status = QLabel("Loading CAD workspace…")
+        self.lbl_cad_status.setWordWrap(True)
+        self.lbl_cad_status.setStyleSheet("color: #9ca3af; padding: 2px 0;")
+        header_layout.addWidget(self.lbl_cad_status)
+        layout.addWidget(header)
+
+        actions = QHBoxLayout()
         self.btn_cad_export = QPushButton("💾  Export Indoor Units + Schedule")
         self.btn_cad_export.setObjectName("btn_success")
         self.btn_cad_export.setEnabled(False)
         self.btn_cad_export.clicked.connect(self.export_cad_workflow)
-        buttons.addWidget(self.btn_cad_export)
-        buttons.addStretch()
-        layout.addLayout(buttons)
-
-        self.lbl_cad_status = QLabel("No CAD file loaded — upload a DWG or DXF floor plan to begin.")
-        self.lbl_cad_status.setWordWrap(True)
-        self.lbl_cad_status.setStyleSheet("color: #6b7280; padding: 2px 4px;")
-        layout.addWidget(self.lbl_cad_status)
+        actions.addWidget(self.btn_cad_export)
+        actions.addStretch()
+        layout.addLayout(actions)
 
         self.table_cad = QTableWidget()
         self.table_cad.setAlternatingRowColors(True)
@@ -1715,12 +1782,12 @@ class HAPToCarrierApp(QMainWindow):
         self.table_cad.setSelectionBehavior(QTableWidget.SelectRows)
         self.table_cad.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table_cad.verticalHeader().setVisible(False)
+        self.table_cad.setSortingEnabled(True)
         layout.addWidget(self.table_cad)
 
         hint = QLabel(
-            "ملاحظة هندسية: يتم وضع Indoor Units داخل representative point لكل غرفة. "
-            "لا يتم وضع Outdoor Units تلقائيًا لأن الغرفة ليست موقعًا آمنًا للوحدة الخارجية؛ "
-            "سيظل ذلك خطوة Placement منفصلة."
+            "Review required: detected rooms and HAP links are project data, not final engineering approval. "
+            "Outdoor units and refrigerant piping are not placed automatically."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #f59e0b; font-size: 11px; padding: 2px 4px;")
@@ -1733,6 +1800,20 @@ class HAPToCarrierApp(QMainWindow):
         )
         if path:
             self._load_cad(path)
+
+    def _open_cad_workspace(self, path: str):
+        """Open a fresh file-specific CAD tab without duplicating project state."""
+        if self.cad_workspace_tab is not None:
+            old_index = self.tabs.indexOf(self.cad_workspace_tab)
+            if old_index >= 0:
+                self.tabs.removeTab(old_index)
+            self.cad_workspace_tab.deleteLater()
+        self.cad_workspace_tab = self._build_cad_workspace_tab(path)
+        tab_name = os.path.basename(path)
+        if len(tab_name) > 28:
+            tab_name = tab_name[:25] + "..."
+        self.tabs.addTab(self.cad_workspace_tab, f"🗺  {tab_name}")
+        self.tabs.setCurrentWidget(self.cad_workspace_tab)
 
     def _load_cad(self, path: str):
         try:
@@ -1752,7 +1833,13 @@ class HAPToCarrierApp(QMainWindow):
         self.cad_rooms = rooms
         self.cad_diagnostics = diagnostics
         self.cad_room_systems = suggest_room_assignments(rooms, self.systems)
+        self._open_cad_workspace(path)
         self._render_cad_rooms()
+        if hasattr(self, "lbl_cad_landing_status"):
+            self.lbl_cad_landing_status.setText(
+                f"Workspace opened for {os.path.basename(path)}. "
+                "Use the new CAD tab to review the detected rooms."
+            )
         self._set_status(f"✅ {os.path.splitext(path)[1][1:].upper()} loaded — {len(rooms)} room(s) detected.")
 
     def _cad_system_names(self):

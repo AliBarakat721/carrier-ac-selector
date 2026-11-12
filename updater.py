@@ -34,6 +34,7 @@ ALLOWED_ROOT_FILES = {
     "requirements.txt", "requirements-dev.txt", "README.md",
 }
 ALLOWED_DATA_FILES = {"Carrier_AC_Database.xlsx", "Carrier_AC_Database.csv"}
+ALLOWED_PACKAGE_DIRS = {"cad", "engineering", "equipment", "hap", "reports", "ui"}
 SEMVER_PATTERN = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\Z")
 
 
@@ -242,12 +243,18 @@ def _validate_archive(archive_path: Path) -> None:
                     raise UpdateError("Encrypted update package entries are not supported.")
 
                 if is_dir:
-                    if parts != ("data",):
-                        raise UpdateError(f"Unexpected directory in update package: {raw_name}")
-                    continue
+                    if parts == ("data",):
+                        continue
+                    if parts[0].casefold() in ALLOWED_PACKAGE_DIRS:
+                        continue
+                    raise UpdateError(f"Unexpected directory in update package: {raw_name}")
                 if len(parts) == 1 and parts[0] in ALLOWED_ROOT_FILES:
                     found.add(parts[0])
                 elif len(parts) == 2 and parts[0] == "data" and parts[1] in ALLOWED_DATA_FILES:
+                    pass
+                elif (len(parts) >= 2 and parts[0].casefold() in ALLOWED_PACKAGE_DIRS
+                      and parts[-1].casefold().endswith(".py")
+                      and all(part.casefold() != "__pycache__" for part in parts)):
                     pass
                 else:
                     raise UpdateError(f"Unexpected file in update package: {raw_name}")

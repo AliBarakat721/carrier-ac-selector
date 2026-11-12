@@ -109,6 +109,27 @@ def test_safe_archive_is_accepted(tmp_path):
     updater._validate_archive(archive)
 
 
+def test_legacy_cad_payload_and_supported_package_trees_are_accepted(tmp_path):
+    archive = tmp_path / "package-trees.zip"
+    _write_valid_archive(
+        archive,
+        {
+            "cad/__init__.py": "# legacy installer requires this package\n",
+            "cad/nested/reader.py": "# source\n",
+            "engineering/electrical/checks.py": "# source\n",
+            "ui/__init__.py": "# source\n",
+        },
+    )
+    updater._validate_archive(archive)
+
+
+def test_non_python_file_in_application_package_is_rejected(tmp_path):
+    archive = tmp_path / "unexpected-package-file.zip"
+    _write_valid_archive(archive, {"cad/unexpected.txt": "not source"})
+    with pytest.raises(UpdateError, match="Unexpected file"):
+        updater._validate_archive(archive)
+
+
 @pytest.mark.parametrize(
     "member", ["../escape.txt", "/absolute.txt", "C:/escape.txt", "nested/too/deep.py", "main.py:stream"]
 )

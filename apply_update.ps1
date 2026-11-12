@@ -46,6 +46,7 @@ function Test-UpdateArchive([string]$ZipPath) {
         "requirements.txt", "requirements-dev.txt", "README.md"
     )
     $allowedData = @("Carrier_AC_Database.xlsx", "Carrier_AC_Database.csv")
+    $allowedPackageDirs = @("cad", "engineering", "equipment", "hap", "reports", "ui")
     $required = @("main.py", "core.py", "requirements.txt", "updater.py", "version.py", "apply_update.ps1")
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     $found = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
@@ -75,14 +76,16 @@ function Test-UpdateArchive([string]$ZipPath) {
                 throw "Links and special files are not allowed: $raw"
             }
             if ($isDirectory) {
-                if ($clean -ne 'data') { throw "Unexpected directory in update archive: $raw" }
-                continue
+                if ($clean -eq 'data' -or $allowedPackageDirs -contains $parts[0]) { continue }
+                throw "Unexpected directory in update archive: $raw"
             }
 
             if ($parts.Count -eq 1 -and $allowedRoot -contains $parts[0]) {
                 [void]$found.Add($parts[0])
             } elseif ($parts.Count -eq 2 -and $parts[0] -eq 'data' -and $allowedData -contains $parts[1]) {
                 # The user database is preserved by the installer below.
+            } elseif ($parts.Count -ge 2 -and $allowedPackageDirs -contains $parts[0] -and $parts[-1].EndsWith('.py') -and $parts -notcontains '__pycache__') {
+                # Only Python source files in explicitly allowed application packages are accepted.
             } else {
                 throw "Unexpected file in update archive: $raw"
             }

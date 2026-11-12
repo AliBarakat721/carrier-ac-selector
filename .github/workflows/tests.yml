@@ -33,12 +33,12 @@ jobs:
         run: python -c "import PySide6, pandas, openpyxl, pytesseract, PIL, docx, pymupdf"
       - name: Compile Python modules (Linux)
         if: runner.os == 'Linux'
-        run: python -m py_compile core.py main.py electrical_engine.py ocr_engine.py roi_tab.py updater.py version.py cad/*.py
+        run: python -m py_compile core.py main.py electrical_engine.py ocr_engine.py roi_tab.py updater.py version.py cad/*.py engineering/*.py equipment/*.py hap/*.py reports/*.py ui/*.py
       - name: Compile Python modules (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $files = Get-ChildItem -Path cad -Filter *.py | ForEach-Object { $_.FullName }
+          $files = Get-ChildItem -Path cad, engineering, equipment, hap, reports, ui -Filter *.py | ForEach-Object { $_.FullName }
           python -m py_compile core.py main.py electrical_engine.py ocr_engine.py roi_tab.py updater.py version.py $files
       - name: Validate PowerShell updater syntax
         if: runner.os == 'Windows'
@@ -62,6 +62,20 @@ jobs:
             Set-Content -LiteralPath (Join-Path $stage $name) -Value "# validation fixture"
           }
           Set-Content -LiteralPath (Join-Path $stage "data/Carrier_AC_Database.xlsx") -Value "fixture"
+          $packages = @{
+            "cad" = @("__init__.py", "block_manager.py", "dxf_exporter.py", "dxf_reader.py", "importer.py", "layer_manager.py", "schedule_builder.py", "space_detector.py", "tag_config.py", "workflow.py")
+            "engineering" = @("__init__.py", "units.py")
+            "equipment" = @("__init__.py", "best_pick.py", "catalog_reader.py", "indoor_selector.py")
+            "hap" = @("__init__.py", "parser.py")
+            "reports" = @("__init__.py", "electrical_report.py", "excel_export.py", "export_frames.py", "file_io.py")
+            "ui" = @("__init__.py", "layout.py")
+          }
+          foreach ($package in $packages.Keys) {
+            New-Item -ItemType Directory -Path (Join-Path $stage $package) -Force | Out-Null
+            foreach ($name in $packages[$package]) {
+              Set-Content -LiteralPath (Join-Path $stage "$package/$name") -Value "# validation fixture"
+            }
+          }
           $archive = Join-Path $env:RUNNER_TEMP "carrier-updater-validation.zip"
           Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $archive -Force
           & "$PWD/apply_update.ps1" -Archive $archive -TargetDir "$PWD" -WaitPid -1 -ValidateOnly

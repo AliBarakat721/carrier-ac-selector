@@ -57,7 +57,15 @@ from .tag_config import (
     validate_tag_attributes,
     validate_unique_entity_ids,
 )
-from .workflow import RoomAssignment, build_indoor_placements, suggest_room_assignments
+from .workflow import RoomAssignment, build_indoor_placements, match_room_systems, suggest_room_assignments
+from .room_matching import (
+    AssignmentReason,
+    AssignmentStatus,
+    MatchingResult,
+    RoomMatch,
+    match_rooms_to_systems,
+    normalize_name,
+)
 
 __all__ = [
     "CadDocument",
@@ -115,4 +123,11 @@ __all__ = [
     "RoomAssignment",
     "build_indoor_placements",
     "suggest_room_assignments",
+    "match_room_systems",
+    "AssignmentStatus",
+    "AssignmentReason",
+    "RoomMatch",
+    "MatchingResult",
+    "match_rooms_to_systems",
+    "normalize_name",
 ]

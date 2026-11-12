@@ -42,7 +42,7 @@ from cad.dxf_exporter import export_hvac_dxf
 from cad.importer import read_cad_file
 from cad.room_review import RoomReviewSession
 from room_review_dialog import RoomReviewDialog
-from cad.workflow import RoomAssignment, build_indoor_placements, suggest_room_assignments
+from cad.workflow import RoomAssignment, build_indoor_placements, match_room_systems
 from version import APP_VERSION
 import math
 
@@ -976,6 +976,7 @@ class HAPToCarrierApp(QMainWindow):
         self.cad_rooms = []
         self.cad_diagnostics = []
         self.cad_room_systems = {}
+        self.cad_matching = None          # MatchingResult for the current rooms/systems
         self.cad_review_session = None   # RoomReviewSession for the loaded drawing
         self.cad_workspace_tab = None
 
@@ -1780,9 +1781,9 @@ class HAPToCarrierApp(QMainWindow):
 
         self.table_cad = QTableWidget()
         self.table_cad.setAlternatingRowColors(True)
-        self.table_cad.setColumnCount(6)
+        self.table_cad.setColumnCount(7)
         self.table_cad.setHorizontalHeaderLabels(
-            ["Room ID", "Label", "Area (m²)", "Status", "HAP System", "Selected Unit"]
+            ["Room ID", "Label", "Area (m²)", "Status", "HAP System", "Selected Unit", "Match"]
         )
         self.table_cad.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.table_cad.horizontalHeader().setStretchLastSection(True)
@@ -1878,7 +1879,8 @@ class HAPToCarrierApp(QMainWindow):
         self.cad_room_systems = {
             room_id: name for room_id, name in self.cad_room_systems.items() if room_id in known_ids
         }
-        for room_id, system_name in suggest_room_assignments(rooms, self.systems).items():
+        self.cad_matching = match_room_systems(rooms, self.systems)
+        for room_id, system_name in self.cad_matching.matched.items():
             self.cad_room_systems.setdefault(room_id, system_name)
         self._render_cad_rooms()
         blockers = session.blockers()
@@ -1903,8 +1905,8 @@ class HAPToCarrierApp(QMainWindow):
     def _refresh_cad_workflow(self):
         if not self.cad_rooms:
             return
-        suggested = suggest_room_assignments(self.cad_rooms, self.systems)
-        for room_id, system_name in suggested.items():
+        self.cad_matching = match_room_systems(self.cad_rooms, self.systems)
+        for room_id, system_name in self.cad_matching.matched.items():
             self.cad_room_systems.setdefault(room_id, system_name)
         self._render_cad_rooms()
 
@@ -1946,11 +1948,28 @@ class HAPToCarrierApp(QMainWindow):
             if entry:
                 unit_text = f"{entry.get('units', 1)}x {entry.get('row', {}).get('Indoor Unit Model', 'selected')}"
             self.table_cad.setItem(row_index, 5, QTableWidgetItem(str(unit_text)))
+            match = self.cad_matching.by_room_id().get(room.room_id) if self.cad_matching else None
+            if match is None:
+                match_text, match_tip = "—", "No matching pass has run yet."
+            else:
+                match_text = f"{match.status.value} / {match.reason.value}"
+                match_tip = match_text
+                if match.candidates:
+                    match_tip += "\nCandidates: " + ", ".join(match.candidates)
+                if match.is_matched:
+                    match_tip += f"\nRoom '{match.room_name}' → system '{match.system_name}'"
+                else:
+                    match_tip += f"\nRoom '{match.room_name}' was not assigned automatically."
+            match_item = QTableWidgetItem(match_text)
+            match_item.setToolTip(match_tip)
+            self.table_cad.setItem(row_index, 6, match_item)
         self.table_cad.setSortingEnabled(True)
         assigned = sum(1 for room in self.cad_rooms if self.cad_room_systems.get(room.room_id))
         diag_text = f"; {len(self.cad_diagnostics)} geometry diagnostic(s)" if self.cad_diagnostics else ""
+        match_text = f"; matching: {self.cad_matching.summary()}" if self.cad_matching else ""
         self.lbl_cad_status.setText(
-            f"{len(self.cad_rooms)} room(s) approved; {assigned} system assignment(s){diag_text}."
+            f"{len(self.cad_rooms)} room(s) approved; {assigned} system assignment(s)"
+            f"{match_text}{diag_text}."
         )
         if hasattr(self, "btn_cad_review"):
             self.btn_cad_review.setEnabled(self.cad_review_session is not None)

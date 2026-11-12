@@ -16,7 +16,8 @@ kinds of test live here and they must stay distinguishable:
 
 Mapping
 -------
-R1 room matching by drawing order        -> Phase 4 (xfail)
+R1 room matching by drawing order        -> Phase 4 (fixed; positional pairing
+                                             removed, names are the only evidence)
 R2 furniture closed curve treated as room -> Phase 3 (fixed for the review API,
                                              characterisation kept for the legacy
                                              API)
@@ -93,22 +94,15 @@ def _minimal_dxf(path):
 # ---------------------------------------------------------------------------
 
 
-def test_r1_current_matching_pairs_remaining_rooms_by_order():
-    """Characterisation: equal counts with no labels are paired positionally."""
+def test_r1_legacy_api_no_longer_pairs_remaining_rooms_by_order():
+    """Regression: equal counts with no labels are no longer paired positionally."""
 
     rooms = [_room("ROOM-001"), _room("ROOM-002", x=10)]
     systems = [SimpleNamespace(name="G01"), SimpleNamespace(name="G02")]
 
-    assert suggest_room_assignments(rooms, systems) == {
-        "ROOM-001": "G01",
-        "ROOM-002": "G02",
-    }
+    assert suggest_room_assignments(rooms, systems) == {}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Phase 4: positional zip() pairing must be removed; unmatched rooms must stay unassigned.",
-)
 def test_r1_unlabelled_rooms_are_not_paired_by_order():
     rooms = [_room("ROOM-001"), _room("ROOM-002", x=10)]
     systems = [SimpleNamespace(name="G01"), SimpleNamespace(name="G02")]

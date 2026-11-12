@@ -17,6 +17,10 @@ def test_numeric_parsers_reject_infinity_and_read_grouped_dot_thousands():
     assert core.parse_user_number("1.234,5") == 1_234.5
 
 
+def test_to_float_treats_pandas_na_as_missing():
+    assert core.to_float(pd.NA) is None
+
+
 def test_select_units_rejects_nan_load_instead_of_returning_all_rows():
     with pytest.raises(ValueError, match="btu must be a finite number"):
         core.select_units(pd.DataFrame(), math.nan, 0)

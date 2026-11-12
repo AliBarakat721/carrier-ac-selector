@@ -49,3 +49,4 @@ Thumbs.db
 # External engineering documents - not approved for publishing
 /G01.RTF
 /Systems_Design_Report.RTF
+.venv.backup-*/

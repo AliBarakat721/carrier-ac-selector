@@ -213,7 +213,7 @@ def _normalize_rtf_ws(s: str) -> str:
     return s
 
 
-def parse_hap_text(text: str) -> HapResult:
+def _parse_hap_chunk(text: str) -> HapResult:
     """Extract cooling load (Btu/hr) and coil CFM from HAP summary text.
 
     Rules (learned from real OCR output):
@@ -327,6 +327,96 @@ def parse_hap_text(text: str) -> HapResult:
     else:
         res.warnings.append("Coil CFM not found. Enter it manually.")
     return res
+
+
+# ── Source reconciliation (native text layer vs OCR / repeated sections) ──────
+_CONFLICT_TOL = 0.005   # 0.5 %: ignore rounding-level differences
+
+_SOURCE_MARKER = re.compile(
+    r'(?m)^---\s*page\s+\d+\s+of\s+\d+\s+\((text layer|OCR)\)\s*---\s*$')
+
+
+def _values_conflict(a: float, b: float) -> bool:
+    return a > 0 and b > 0 and abs(a - b) > _CONFLICT_TOL * max(a, b)
+
+
+def _merge_field_sets(primary, other, primary_label: str, other_label: str):
+    """Reconcile two readings of the SAME system/report.
+
+    The primary reading (native text, or the first section) is exact, so it
+    wins. A value is taken from `other` only when the primary lacks it, and
+    that is reported. If both have a value and they disagree, the primary is
+    kept and the conflict is reported instead of being replaced silently.
+    Returns (btu, cfm, sensible_btu, warnings).
+    """
+    btu, cfm, sens = primary.btu, primary.cfm, primary.sensible_btu
+    warns = list(primary.warnings)
+    filled = False
+
+    for label, attr, unit in (("Cooling load", "btu", "Btu/hr"),
+                              ("Coil CFM", "cfm", "CFM"),
+                              ("Sensible load", "sensible_btu", "Btu/hr")):
+        a, b = getattr(primary, attr), getattr(other, attr)
+        if _values_conflict(a, b):
+            warns.append(
+                f"{label} conflict: {primary_label} {a:,.0f} {unit} vs "
+                f"{other_label} {b:,.0f} {unit} - kept {primary_label}; "
+                "please verify.")
+        elif a <= 0 < b:
+            filled = True
+            if attr == "btu":
+                btu = b
+            elif attr == "cfm":
+                cfm = b
+            else:
+                sens = b
+            warns.append(f"{label} read only from {other_label} "
+                         f"({b:,.0f} {unit}) - please verify.")
+
+    # Drop warnings that the other source has made obsolete.
+    stale = []
+    if btu > 0:
+        stale += ["Cooling load not found", "Could not read the 'Total coil load'"]
+    if cfm > 0:
+        stale += ["Coil CFM not found"]
+    if filled:
+        stale += ["Cooling coil section not found"]
+    warns = [w for w in warns if not any(w.startswith(x) for x in stale)]
+    if btu <= 0 and not any(w.startswith("Cooling load not found") or
+                            w.startswith("Could not read") for w in warns):
+        warns.append("Cooling load not found. Enter it manually.")
+    if cfm <= 0 and not any(w.startswith("Coil CFM not found") for w in warns):
+        warns.append("Coil CFM not found. Enter it manually.")
+    return btu, cfm, sens, list(dict.fromkeys(warns))
+
+
+def parse_hap_text_reconciled(text: str) -> HapResult:
+    """Like parse_hap_text, but aware of the '(text layer)' / '(OCR)' page
+    markers written by ocr_engine.extract_text.
+
+    Native text and OCR text are parsed separately and then reconciled, so an
+    OCR misread can neither hide behind nor silently overwrite a native value.
+    Text without both kinds of marker is parsed exactly as before.
+    """
+    text = text or ""
+    native, ocr = [], []
+    parts = _SOURCE_MARKER.split(text)
+    # split() with one capture group -> [pre, kind1, body1, kind2, body2, ...]
+    for kind, body in zip(parts[1::2], parts[2::2]):
+        (native if kind == "text layer" else ocr).append(body)
+    if not native or not ocr:
+        return _parse_hap_chunk(text)
+    first = _parse_hap_chunk("\n".join(native))
+    second = _parse_hap_chunk("\n".join(ocr))
+    btu, cfm, sens, warns = _merge_field_sets(first, second, "native text", "OCR")
+    return HapResult(btu=btu, cfm=cfm, sensible_btu=sens, warnings=warns)
+
+
+
+def parse_hap_text(text: str) -> HapResult:
+    """Public entry point: parse HAP text (marker-aware, see
+    parse_hap_text_reconciled). Unmarked text behaves exactly as before."""
+    return parse_hap_text_reconciled(text)
 
 
 # ── Selection ─────────────────────────────────────────────────────────────────
@@ -552,7 +642,7 @@ def parse_all_systems(text: str) -> list:
         end = matches[i + 1].start() if i + 1 < len(matches) else len(t)
         chunk = t[m.start():end]
 
-        r = parse_hap_text(chunk)
+        r = _parse_hap_chunk(chunk)
         load = SystemLoad(name, r.btu, r.cfm, r.sensible_btu, r.warnings)
 
         prev = by_name.get(name)
@@ -560,15 +650,12 @@ def parse_all_systems(text: str) -> list:
             by_name[name] = load
             systems.append(load)
         else:
-            # Merge repeated sections by field completeness, not BTU alone.
-            merged = SystemLoad(
-                name=name,
-                btu=load.btu if load.btu > 0 else prev.btu,
-                cfm=load.cfm if load.cfm > 0 else prev.cfm,
-                sensible_btu=(load.sensible_btu if load.sensible_btu > 0
-                              else prev.sensible_btu),
-                warnings=list(dict.fromkeys(prev.warnings + load.warnings)),
-            )
+            # Merge repeated sections by field completeness. The first reading
+            # wins; a disagreeing later (e.g. OCR) value is reported, not applied.
+            btu, cfm, sens, warns = _merge_field_sets(
+                prev, load, "first reading", "later reading (OCR/repeat)")
+            merged = SystemLoad(name=name, btu=btu, cfm=cfm,
+                                sensible_btu=sens, warnings=warns)
             idx = next(j for j, item in enumerate(systems) if item.name == name)
             systems[idx] = merged
             by_name[name] = merged

@@ -201,9 +201,14 @@ def extract_text(path: str, progress=None) -> str:
             from core import parse_all_systems
             single = parse_hap_text(layer)
             systems = parse_all_systems(layer)
-            single_complete = single.btu > 0 and single.cfm > 0 and not single.warnings
-            batch_complete = bool(systems) and all(s.btu > 0 and s.cfm > 0 for s in systems)
-            if single_complete or batch_complete:
+            # One completeness rule for both paths: every field present and
+            # no parser warnings. With system headers, EVERY system must pass.
+            if systems:
+                layer_complete = all(s.btu > 0 and s.cfm > 0 and not s.warnings
+                                     for s in systems)
+            else:
+                layer_complete = single.btu > 0 and single.cfm > 0 and not single.warnings
+            if layer_complete:
                 progress(95)
                 return layer
             # A partial native text layer is not proof that all required fields

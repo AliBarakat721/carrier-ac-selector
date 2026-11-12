@@ -16,8 +16,12 @@ if ([int]$parts[0] -lt 3 -or ([int]$parts[0] -eq 3 -and [int]$parts[1] -lt 10)) 
 $venvPython = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $venvPython)) {
     if (Test-Path (Join-Path $PSScriptRoot ".venv")) {
-        Write-Host "Replacing an incompatible .venv with a Windows virtual environment..."
-        & python -m venv --clear .venv
+        # Never delete the folder: move it aside so nothing is lost if .venv
+        # was a non-Windows environment or contained user files.
+        $backup = Join-Path $PSScriptRoot (".venv.backup-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+        Write-Host "Moving the incompatible .venv to $backup and creating a Windows virtual environment..."
+        Move-Item -LiteralPath (Join-Path $PSScriptRoot ".venv") -Destination $backup
+        & python -m venv .venv
     } else {
         Write-Host "Creating Windows virtual environment in .venv..."
         & python -m venv .venv

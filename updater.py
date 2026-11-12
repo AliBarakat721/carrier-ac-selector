@@ -35,6 +35,13 @@ ALLOWED_ROOT_FILES = {
 }
 ALLOWED_DATA_FILES = {"Carrier_AC_Database.xlsx", "Carrier_AC_Database.csv"}
 ALLOWED_PACKAGE_DIRS = {"cad", "engineering", "equipment", "hap", "reports", "ui"}
+# Backward-compatible list used by existing updater fixtures. New package
+# trees are validated through ALLOWED_PACKAGE_DIRS below.
+ALLOWED_CAD_FILES = {
+    "__init__.py", "block_manager.py", "dxf_exporter.py", "dxf_reader.py",
+    "importer.py", "layer_manager.py", "schedule_builder.py",
+    "space_detector.py", "tag_config.py", "workflow.py",
+}
 SEMVER_PATTERN = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\Z")
 
 

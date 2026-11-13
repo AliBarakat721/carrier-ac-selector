@@ -6,7 +6,7 @@ import pytest
 
 import cad.space_detector as space_detector
 from cad.dxf_reader import read_dxf
-from cad.space_detector import _snap_line_endpoints, detect_spaces
+from cad.space_detector import _snap_line_endpoints, detect_spaces, detect_spaces_with_review
 
 
 def make_sample_dxf(path: Path) -> None:
@@ -38,6 +38,94 @@ def test_read_dxf_extracts_units_layers_and_entities(tmp_path):
     assert document.entity_count == 5
     assert len(document.entities_of_type("LWPOLYLINE")) == 1
     assert len(document.entities_of_type("LINE")) == 4
+
+
+def test_solid_quadrilateral_is_read_in_polygon_order_and_detected(tmp_path):
+    source = tmp_path / "solid-quad.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    drawing.modelspace().add_solid(
+        # ezdxf preserves the DXF SOLID convention where the last two
+        # vertices are stored in reverse order; wcs_vertices() must restore
+        # the polygon order for the detector.
+        [(0, 0), (5, 0), (0, 4), (5, 4)],
+        dxfattribs={"layer": "ROOMS"},
+    )
+    drawing.saveas(source)
+
+    document = read_dxf(source)
+    solid = document.entities_of_type("SOLID")[0]
+    rooms = detect_spaces(document, include_wall_lines=False)
+
+    assert len(solid.data["points"]) == 4
+    assert solid.data["closed"] is True
+    assert len(rooms) == 1
+    assert rooms[0].source == "solid_polygon"
+    assert rooms[0].area == pytest.approx(20.0)
+    assert rooms[0].boundary_handles == (solid.handle,)
+
+
+def test_solid_triangle_is_detected_without_duplicate_vertex(tmp_path):
+    source = tmp_path / "solid-triangle.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    drawing.modelspace().add_solid(
+        [(0, 0), (4, 0), (0, 3)],
+        dxfattribs={"layer": "ROOMS"},
+    )
+    drawing.saveas(source)
+
+    document = read_dxf(source)
+    solid = document.entities_of_type("SOLID")[0]
+    rooms = detect_spaces(document, include_wall_lines=False)
+
+    assert len(solid.data["points"]) == 3
+    assert len(rooms) == 1
+    assert rooms[0].source == "solid_polygon"
+    assert rooms[0].area == pytest.approx(6.0)
+
+
+def test_solid_inside_block_is_transformed_and_keeps_insert_handle(tmp_path):
+    source = tmp_path / "inserted-solid.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    block = drawing.blocks.new("ROOM_SOLID")
+    block.add_solid([(0, 0), (5, 0), (0, 4), (5, 4)], dxfattribs={"layer": "0"})
+    insert = drawing.modelspace().add_blockref(
+        "ROOM_SOLID",
+        (10, 20),
+        dxfattribs={"layer": "ROOMS", "xscale": 2.0},
+    )
+    drawing.saveas(source)
+
+    document = read_dxf(source)
+    solids = document.entities_of_type("SOLID")
+    rooms = detect_spaces(document, include_wall_lines=False)
+
+    assert len(solids) == 1
+    assert solids[0].layer == "ROOMS"
+    assert solids[0].source_insert_handles == (insert.dxf.handle,)
+    assert rooms[0].area == pytest.approx(40.0)
+    assert insert.dxf.handle in rooms[0].boundary_handles
+
+
+def test_solid_on_furniture_layer_is_rejected_by_review_rules(tmp_path):
+    source = tmp_path / "furniture-solid.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    drawing.layers.new("A-FURN")
+    drawing.modelspace().add_solid(
+        [(0, 0), (2, 0), (2, 2), (0, 2)],
+        dxfattribs={"layer": "A-FURN"},
+    )
+    drawing.saveas(source)
+
+    report = detect_spaces_with_review(source, include_wall_lines=False)
+
+    assert len(report.rooms) == 1
+    assert report.rooms[0].source == "solid_polygon"
+    assert report.rooms[0].candidate_status == "REJECTED"
+    assert report.rooms[0].candidate_reasons == ("LAYER_CLASS_NOT_A_ROOM:FURNITURE",)
 
 
 def test_block_room_geometry_is_transformed_and_inherits_insert_layer(tmp_path):

@@ -210,6 +210,13 @@ def _closed_polyline_spaces(document: CadDocument, arc_angle_tolerance: float) -
                 entity.data.get("points", []), entity.data.get("bulges", []), True, arc_angle_tolerance
             ) if entity.data.get("closed") else []
             source = "closed_polyline"
+        elif entity.entity_type.upper() == "SOLID":
+            # SOLID is a filled triangle or quadrilateral.  The reader has
+            # already converted its OCS vertices to correctly ordered WCS
+            # points, so it can enter the same polygon/metrics pipeline as a
+            # closed polyline without becoming wall linework.
+            points = list(entity.data.get("points", [])) if entity.data.get("closed") else []
+            source = "solid_polygon"
         elif entity.entity_type.upper() in {"CIRCLE", "SPLINE"}:
             points, closed, source = _curve_points(entity, arc_angle_tolerance)
             if not closed:

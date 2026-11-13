@@ -185,6 +185,16 @@ def _entity_data(entity: DXFGraphic) -> dict[str, Any]:
             "center": _point(entity.dxf.center),
             "radius": float(entity.dxf.radius),
         }
+    if kind == "SOLID":
+        # SOLID stores its last two OCS vertices in reverse order at the DXF
+        # level.  ezdxf's wcs_vertices() returns the expected polygon order
+        # and also applies the entity's OCS extrusion transform.
+        vertices = entity.wcs_vertices(close=False)
+        return {
+            "points": [(float(vertex.x), float(vertex.y)) for vertex in vertices],
+            "z_values": [float(vertex.z) for vertex in vertices],
+            "closed": True,
+        }
     if kind == "SPLINE":
         # Keep the reader independent of ezdxf entity classes by storing a
         # deterministic polyline approximation for downstream polygonizing.

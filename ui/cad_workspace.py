@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from pathlib import Path
 from typing import Iterable
 
-from PySide6.QtCore import Qt, QPointF, QRectF, Signal
+from PySide6.QtCore import Qt, QPointF, QRectF, QSize, Signal
 from PySide6.QtGui import QColor, QBrush, QPen, QPainter, QIcon
 from PySide6.QtWidgets import (
     QFrame,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from cad.dxf_reader import CadEntity
 
 
 PALETTE = {
@@ -46,6 +48,11 @@ def _icon(root: Path, name: str) -> QIcon:
 class CadViewport(QGraphicsView):
     entity_selected = Signal(object)
     room_selected = Signal(object)
+    entity_created = Signal(object)
+    entity_deleted = Signal(object)
+    entity_moved = Signal(object, object, object)
+    action_undone = Signal()
+    prompt_changed = Signal(str)
 
     def __init__(self, project_root: Path, parent=None):
         super().__init__(parent)
@@ -58,7 +65,24 @@ class CadViewport(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self._rooms = []
         self._room_items = {}
+        self._mode = "select"
+        self._pending_point = None
+        self._move_entity = None
         self._draw_grid()
+
+    def set_mode(self, mode: str):
+        self._mode = mode
+        self._pending_point = None
+        self._move_entity = None
+        prompts = {
+            "select": "Select mode · click a CAD entity or room",
+            "line": "Draw line · click start point, then end point",
+            "rectangle": "Draw rectangle · click first corner, then opposite corner",
+            "circle": "Draw circle · click center, then radius point",
+            "move": "Move · click an entity, then its destination point",
+            "delete": "Delete · click an entity to remove it (rooms are protected)",
+        }
+        self.prompt_changed.emit(prompts.get(mode, "Select mode"))
 
     def _draw_grid(self):
         # The grid is painted as a viewport background, not as scene items;
@@ -158,6 +182,54 @@ class CadViewport(QGraphicsView):
             self.scene.addItem(label)
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self._mode in {"line", "rectangle", "circle"}:
+            point = self.mapToScene(event.position().toPoint())
+            world_point = (float(point.x()), -float(point.y()))
+            if self._pending_point is None:
+                self._pending_point = world_point
+                self.prompt_changed.emit("First point set · click the second point to finish")
+            else:
+                first, self._pending_point = self._pending_point, None
+                x1, y1 = first
+                x2, y2 = world_point
+                if math.isclose(x1, x2) and math.isclose(y1, y2):
+                    self.prompt_changed.emit("Points are identical · click a different second point")
+                    self._pending_point = first
+                    return
+                if self._mode == "line":
+                    entity = CadEntity("LINE", "MANUS_DRAWN", None, {"start": first, "end": world_point})
+                elif self._mode == "circle":
+                    entity = CadEntity("CIRCLE", "MANUS_DRAWN", None, {"center": first, "radius": math.hypot(x2 - x1, y2 - y1)})
+                else:
+                    entity = CadEntity("LWPOLYLINE", "MANUS_DRAWN", None, {"points": [(x1, y1), (x2, y1), (x2, y2), (x1, y2)], "closed": True})
+                self.entity_created.emit(entity)
+                self.prompt_changed.emit(f"{self._mode.title()} added to drawing · choose another tool or Select")
+            event.accept()
+            return
+        if event.button() == Qt.LeftButton and self._mode in {"delete", "move"}:
+            item = self.itemAt(event.position().toPoint())
+            value = item.data(0) if item else None
+            if value is None or not hasattr(value, "entity_type"):
+                self.prompt_changed.emit("Select a CAD entity; room geometry is not editable here")
+                event.accept()
+                return
+            point = self.mapToScene(event.position().toPoint())
+            world_point = (float(point.x()), -float(point.y()))
+            if self._mode == "delete":
+                self.entity_deleted.emit(value)
+            elif self._move_entity is None:
+                self._move_entity = (value, world_point)
+                self.prompt_changed.emit("Entity selected · click its new reference point")
+            else:
+                entity, origin = self._move_entity
+                self._move_entity = None
+                self.entity_moved.emit(entity, origin, world_point)
+            event.accept()
+            return
+        if event.button() == Qt.LeftButton and self._mode == "undo":
+            self.action_undone.emit()
+            event.accept()
+            return
         item = self.itemAt(event.position().toPoint())
         if item:
             value = item.data(0)
@@ -314,6 +386,26 @@ class CadWorkspace(QWidget):
         export_button.setObjectName("btn_success")
         export_button.clicked.connect(self.request_export.emit)
         row.addWidget(export_button)
+        row.addSpacing(10)
+        self.tool_buttons = {}
+        tool_specs = (
+            ("line", "Draw line", "line_2p"),
+            ("rectangle", "Draw rectangle", "line_rectangle"),
+            ("circle", "Draw circle", "circle_center_point"),
+            ("move", "Move", "move_copy"),
+            ("delete", "Delete", "delete"),
+            ("undo", "Undo", "back"),
+            ("select", "Select", "cursor"),
+        )
+        for mode, label, icon_name in tool_specs:
+            tool = QPushButton(label)
+            tool.setIcon(_icon(self.project_root, icon_name))
+            tool.setIconSize(QSize(18, 18))
+            tool.setToolTip(label)
+            tool.setObjectName("cad_tool_button")
+            tool.clicked.connect(lambda _checked=False, value=mode: self.viewport.set_mode(value))
+            self.tool_buttons[mode] = tool
+            row.addWidget(tool)
         root.addWidget(toolbar)
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self.browser)
@@ -339,7 +431,65 @@ class CadWorkspace(QWidget):
         root.addWidget(footer)
         self.viewport.room_selected.connect(self._select_room)
         self.viewport.entity_selected.connect(self.properties.show_entity)
+        self.viewport.entity_created.connect(self._add_entity)
+        self.viewport.entity_deleted.connect(self._delete_entity)
+        self.viewport.entity_moved.connect(self._move_entity)
+        self.viewport.action_undone.connect(self._undo_edit)
+        self.viewport.prompt_changed.connect(self.status.setText)
         self.browser.room_clicked.connect(self._select_room_by_id)
+        self._edit_history = []
+
+    def _remember_entities(self):
+        if self.document is not None:
+            self._edit_history.append(list(self.document.entities))
+
+    def _refresh_after_edit(self):
+        self.viewport.render_document(self.document, self.rooms)
+        self.browser.set_project_state(self.document, self.rooms, self.selected_units)
+
+    def _add_entity(self, entity):
+        if self.document is None:
+            self.status.setText("Import a drawing before adding geometry")
+            return
+        self._remember_entities()
+        self.document.entities.append(entity)
+        if "MANUS_DRAWN" not in self.document.layers:
+            self.document.layers.append("MANUS_DRAWN")
+        self._refresh_after_edit()
+
+    def _delete_entity(self, entity):
+        if self.document is None or entity not in self.document.entities:
+            self.status.setText("Only entities in the current drawing can be deleted")
+            return
+        self._remember_entities()
+        self.document.entities.remove(entity)
+        self._refresh_after_edit()
+        self.status.setText("Entity removed · use Undo to restore it")
+
+    def _move_entity(self, entity, origin, destination):
+        if self.document is None or entity not in self.document.entities:
+            self.status.setText("Entity is not part of the editable drawing")
+            return
+        dx, dy = destination[0] - origin[0], destination[1] - origin[1]
+        data = dict(entity.data)
+        for key in ("start", "end", "center", "insert"):
+            point = data.get(key)
+            if point is not None:
+                data[key] = (point[0] + dx, point[1] + dy)
+        if "points" in data:
+            data["points"] = [(x + dx, y + dy) for x, y in data["points"]]
+        self._remember_entities()
+        self.document.entities[self.document.entities.index(entity)] = replace(entity, data=data)
+        self._refresh_after_edit()
+        self.status.setText("Entity moved · use Undo to restore its previous position")
+
+    def _undo_edit(self):
+        if self.document is None or not self._edit_history:
+            self.status.setText("Nothing to undo")
+            return
+        self.document.entities[:] = self._edit_history.pop()
+        self._refresh_after_edit()
+        self.status.setText("Last CAD edit undone")
 
     def set_project_data(self, document, rooms, assignments=None, selected_units=None):
         self.document = document

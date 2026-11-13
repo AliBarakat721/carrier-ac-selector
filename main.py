@@ -199,7 +199,7 @@ QPushButton#header_button { background: transparent; color: #9aa8b8; padding: 5p
 QPushButton#header_button:hover { color: #e6edf5; background: #252f3b; }
 QFrame#ribbon { background-color: #202833; border-bottom: 1px solid #354252; }
 QPushButton#ribbon_button { background: transparent; color: #9aa8b8; border-radius: 3px; padding: 7px 10px; font-weight: 600; }
-QPushButton#ribbon_button:hover, QPushButton#ribbon_button[active="true"] { background: #2d4055; color: #e6edf5; }
+QPushButton#ribbon_button:hover, QPushButton#ribbon_button:checked { background: #2d4055; color: #e6edf5; }
 QTabWidget#workspace_tabs::pane { border: none; }
 QTabWidget#workspace_tabs QTabBar::tab { background: #202833; color: #9aa8b8; padding: 8px 16px; border: none; }
 QTabWidget#workspace_tabs QTabBar::tab:selected { background: #3288f4; color: #ffffff; }
@@ -1155,11 +1155,17 @@ class HAPToCarrierApp(QMainWindow):
         ribbon_layout = QHBoxLayout(ribbon)
         ribbon_layout.setContentsMargins(14, 5, 14, 5)
         ribbon_layout.setSpacing(4)
+        self.ribbon_buttons = {}
         for label in ("File", "Home", "Draw", "Modify", "Architecture", "HVAC", "Equipment", "HAP", "Analysis", "Annotate", "View", "Export"):
             button = QPushButton(label)
             button.setObjectName("ribbon_button")
+            button.setCheckable(True)
             if label == "Home":
-                button.setProperty("active", True)
+                button.setChecked(True)
+            button.clicked.connect(
+                lambda _checked=False, section=label: self._navigate_ribbon(section)
+            )
+            self.ribbon_buttons[label] = button
             ribbon_layout.addWidget(button)
         ribbon_layout.addStretch()
         root_layout.addWidget(ribbon)
@@ -1200,6 +1206,29 @@ class HAPToCarrierApp(QMainWindow):
         self.workspace_tabs.setCurrentIndex(0)
         root_layout.addWidget(self.workspace_tabs, 1)
         self.setCentralWidget(root)
+
+    def _navigate_ribbon(self, section: str) -> None:
+        """Show the functional workspace associated with a ribbon section."""
+        workspace_by_section = {
+            "File": self.cad_workspace,
+            "Home": self.selection_workspace,
+            "Draw": self.cad_workspace,
+            "Modify": self.cad_workspace,
+            "Architecture": self.cad_workspace,
+            "HVAC": self.analyzer_workspace,
+            "Equipment": self.selection_workspace,
+            "HAP": self.analyzer_workspace,
+            "Analysis": self.analyzer_workspace,
+            "Annotate": self.cad_workspace,
+            "View": self.cad_workspace,
+            "Export": self.cad_workspace,
+        }
+        workspace = workspace_by_section.get(section)
+        if workspace is None:
+            return
+        self.workspace_tabs.setCurrentWidget(workspace)
+        for label, button in self.ribbon_buttons.items():
+            button.setChecked(label == section)
 
     # ── Left panel ─────────────────────────────────────────────
     def _build_left_panel(self) -> QScrollArea:

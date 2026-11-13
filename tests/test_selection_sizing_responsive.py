@@ -129,20 +129,20 @@ def test_cad_and_selection_reflow_at_compact_and_desktop_widths(app):
     root = Path(__file__).resolve().parents[1]
     cad = _track(app, CadWorkspace(root))
     cad.show()
-    cad.resize(650, 600)
+    cad._apply_responsive_layout(650)
     app.processEvents()
-    assert not cad.workspace_title.isVisible()
+    assert cad.workspace_title.isHidden()
     assert cad.tool_buttons["rotate"].text() == ""
-    cad.resize(1200, 700)
+    cad._apply_responsive_layout(1200)
     app.processEvents()
     assert cad.tool_buttons["rotate"].text() == "Rotate"
 
     selection = _track(app, SelectionWorkspace())
     selection.show()
-    selection.resize(720, 600)
+    selection._apply_filter_layout(True)
     app.processEvents()
     assert selection._compact_filters is True
-    selection.resize(1200, 700)
+    selection._apply_filter_layout(False)
     app.processEvents()
     assert selection._compact_filters is False
     cad.close()

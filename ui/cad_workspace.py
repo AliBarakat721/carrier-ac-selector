@@ -804,7 +804,10 @@ class CadWorkspace(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        width = event.size().width()
+        self._apply_responsive_layout(event.size().width())
+
+    def _apply_responsive_layout(self, width: int):
+        """Adapt toolbar density using the logical width reported by Qt."""
         compact = width < 980
         self.workspace_title.setVisible(width >= 700)
         self.status.setVisible(width >= 700)

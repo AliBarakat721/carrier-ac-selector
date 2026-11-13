@@ -329,7 +329,10 @@ class SelectionWorkspace(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        compact = self.width() < 980
+        self._apply_filter_layout(self.width() < 980)
+
+    def _apply_filter_layout(self, compact: bool):
+        """Place catalog filters into wide or compact grid positions."""
         if compact == self._compact_filters:
             return
         self._compact_filters = compact

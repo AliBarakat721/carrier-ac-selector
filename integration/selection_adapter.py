@@ -15,6 +15,14 @@ def select_for_room(database: Any, load: RoomLoadInput, *, safety_pct: float = 0
     """Run the existing selector for one room using verified room-level inputs."""
     if not load.room_id.strip():
         raise ValueError("room_id is required")
+    if not load.is_room_level:
+        return RoomSelectionResult(
+            load.room_id,
+            "BLOCKED_UNVERIFIED_LOAD_SCOPE",
+            None,
+            load,
+            ("Load scope must be ROOM or ZONE; system-level/unknown totals cannot be used for room selection.",),
+        )
     for name, value in (("cooling_load_btu", load.cooling_load_btu),
                         ("airflow_cfm", load.airflow_cfm),
                         ("sensible_load_btu", load.sensible_load_btu)):

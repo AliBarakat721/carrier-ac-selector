@@ -46,7 +46,7 @@ function Test-UpdateArchive([string]$ZipPath) {
         "requirements.txt", "requirements-dev.txt", "README.md"
     )
     $allowedData = @("Carrier_AC_Database.xlsx", "Carrier_AC_Database.csv")
-    $allowedPackageDirs = @("cad", "engineering", "equipment", "hap", "reports", "ui")
+    $allowedPackageDirs = @("cad", "engineering", "equipment", "hap", "integration", "reports", "ui")
     $required = @("main.py", "core.py", "requirements.txt", "updater.py", "version.py", "apply_update.ps1")
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     $found = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)

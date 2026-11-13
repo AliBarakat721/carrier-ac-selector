@@ -34,7 +34,7 @@ ALLOWED_ROOT_FILES = {
     "requirements.txt", "requirements-dev.txt", "README.md",
 }
 ALLOWED_DATA_FILES = {"Carrier_AC_Database.xlsx", "Carrier_AC_Database.csv"}
-ALLOWED_PACKAGE_DIRS = {"cad", "engineering", "equipment", "hap", "reports", "ui"}
+ALLOWED_PACKAGE_DIRS = {"cad", "engineering", "equipment", "hap", "integration", "reports", "ui"}
 # Backward-compatible list used by existing updater fixtures. New package
 # trees are validated through ALLOWED_PACKAGE_DIRS below.
 ALLOWED_CAD_FILES = {

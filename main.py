@@ -44,6 +44,9 @@ from cad.importer import read_cad_file
 from cad.room_review import RoomReviewSession
 from room_review_dialog import RoomReviewDialog
 from cad.workflow import RoomAssignment, build_indoor_placements, match_room_systems
+from integration.models import RoomLoadInput
+from integration.hap_zone_parser import HAPZoneSpaceData, parse_hap_zone_summaries
+from integration.selection_adapter import select_for_room
 from version import APP_VERSION
 from logging_setup import configure_logging, default_log_path
 import math
@@ -998,10 +1001,15 @@ class HAPToCarrierApp(QMainWindow):
         # ── [NEW/OPTIONAL] Selection cart — purely additive ──
         self.selected_units   = {}     # {system_name: pd.Series}
         self.cad_source_path = ""
+        self.hap_source_path = ""
         self.cad_document = None
         self.cad_rooms = []
         self.cad_diagnostics = []
         self.cad_room_systems = {}
+        self.cad_room_loads = {}
+        self.cad_room_selections = {}
+        self.cad_room_verified = set()
+        self.hap_zone_data: list[HAPZoneSpaceData] = []
         self.cad_matching = None          # MatchingResult for the current rooms/systems
         self.cad_review_session = None   # RoomReviewSession for the loaded drawing
         self.cad_workspace_tab = None
@@ -1843,6 +1851,9 @@ class HAPToCarrierApp(QMainWindow):
         self.btn_cad_upload.setObjectName("btn_pick")
         self.btn_cad_upload.clicked.connect(self.upload_cad)
         buttons.addWidget(self.btn_cad_upload)
+        self.btn_cad_hap_upload = QPushButton("📄  Upload HAP Report")
+        self.btn_cad_hap_upload.clicked.connect(self.upload_image)
+        buttons.addWidget(self.btn_cad_hap_upload)
         buttons.addStretch()
         layout.addLayout(buttons)
 
@@ -1886,6 +1897,10 @@ class HAPToCarrierApp(QMainWindow):
         self.lbl_cad_status.setWordWrap(True)
         self.lbl_cad_status.setStyleSheet("color: #9ca3af; padding: 2px 0;")
         header_layout.addWidget(self.lbl_cad_status)
+        self.lbl_cad_hap_status = QLabel("No HAP report paired with this drawing.")
+        self.lbl_cad_hap_status.setWordWrap(True)
+        self.lbl_cad_hap_status.setStyleSheet("color: #9ca3af; padding: 2px 0;")
+        header_layout.addWidget(self.lbl_cad_hap_status)
         layout.addWidget(header)
 
         actions = QHBoxLayout()
@@ -1904,21 +1919,26 @@ class HAPToCarrierApp(QMainWindow):
 
         self.table_cad = QTableWidget()
         self.table_cad.setAlternatingRowColors(True)
-        self.table_cad.setColumnCount(7)
+        self.table_cad.setColumnCount(11)
         self.table_cad.setHorizontalHeaderLabels(
-            ["Room ID", "Label", "Area (m²)", "Status", "HAP System", "Selected Unit", "Match"]
+            ["Room ID", "Label", "Area (m²)", "Geometry", "HAP System",
+             "Room Load (Btu/h)", "Room Airflow (CFM)", "Sensible (Btu/h)",
+             "Room Unit", "Match", "Load Verified"]
         )
         self.table_cad.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.table_cad.horizontalHeader().setStretchLastSection(True)
         self.table_cad.setSelectionBehavior(QTableWidget.SelectRows)
-        self.table_cad.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table_cad.setEditTriggers(QTableWidget.DoubleClicked | QTableWidget.EditKeyPressed)
         self.table_cad.verticalHeader().setVisible(False)
         self.table_cad.setSortingEnabled(True)
+        self.table_cad.cellChanged.connect(self._on_cad_room_load_changed)
         layout.addWidget(self.table_cad)
 
         hint = QLabel(
-            "Review required: detected rooms and HAP links are project data, not final engineering approval. "
-            "Outdoor units and refrigerant piping are not placed automatically."
+            "Matching HAP Zone/Space data may prefill a room; a total coil load is used only for a unique one-zone/one-space match. "
+            "Review the source, correct missing values, and check Load Verified for every room before export. "
+            "The unit suggestion, geometry/clearance, and placements still require engineering review. "
+            "Outdoor units and piping are not placed automatically."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #f59e0b; font-size: 11px; padding: 2px 4px;")
@@ -1940,6 +1960,11 @@ class HAPToCarrierApp(QMainWindow):
                 self.tabs.removeTab(old_index)
             self.cad_workspace_tab.deleteLater()
         self.cad_workspace_tab = self._build_cad_workspace_tab(path)
+        if self.hap_source_path:
+            self.lbl_cad_hap_status.setText(
+                f"HAP report: {os.path.basename(self.hap_source_path)} · "
+                f"{len(self.systems)} system(s), {len(self.hap_zone_data)} zone/space row(s) parsed."
+            )
         tab_name = os.path.basename(path)
         if len(tab_name) > 28:
             tab_name = tab_name[:25] + "..."
@@ -1962,6 +1987,10 @@ class HAPToCarrierApp(QMainWindow):
 
         self.cad_source_path = path
         self.cad_document = document
+        self.cad_room_systems.clear()
+        self.cad_room_loads.clear()
+        self.cad_room_selections.clear()
+        self.cad_room_verified.clear()
         self.cad_review_session = session
         self.cad_diagnostics = list(session.report.diagnostics) if session.report else []
         self._open_cad_workspace(path)
@@ -2002,15 +2031,21 @@ class HAPToCarrierApp(QMainWindow):
         self.cad_room_systems = {
             room_id: name for room_id, name in self.cad_room_systems.items() if room_id in known_ids
         }
+        self.cad_room_loads = {
+            room_id: load for room_id, load in self.cad_room_loads.items() if room_id in known_ids
+        }
+        self.cad_room_verified.intersection_update(known_ids)
         self.cad_matching = match_room_systems(rooms, self.systems)
         for room_id, system_name in self.cad_matching.matched.items():
             self.cad_room_systems.setdefault(room_id, system_name)
+        self._apply_hap_zone_inputs()
+        self._refresh_cad_room_selections()
         if hasattr(self, "cad_workspace"):
             self.cad_workspace.set_project_data(
                 self.cad_document,
                 self.cad_rooms,
                 self.cad_room_systems,
-                self.selected_units,
+                self.cad_room_selections,
             )
         self._render_cad_rooms()
         blockers = session.blockers()
@@ -2038,11 +2073,78 @@ class HAPToCarrierApp(QMainWindow):
         self.cad_matching = match_room_systems(self.cad_rooms, self.systems)
         for room_id, system_name in self.cad_matching.matched.items():
             self.cad_room_systems.setdefault(room_id, system_name)
+        self._apply_hap_zone_inputs()
+        self._refresh_cad_room_selections()
         if hasattr(self, "cad_workspace"):
             self.cad_workspace.refresh_assignments(
-                self.cad_room_systems, self.selected_units
+                self.cad_room_systems, self.cad_room_selections
             )
         self._render_cad_rooms()
+
+    @staticmethod
+    def _normalize_hap_identifier(value):
+        return re.sub(r"[^\w]+", "", str(value or "").casefold(), flags=re.UNICODE)
+
+    def _apply_hap_zone_inputs(self):
+        """Import only unique HAP space matches; never fan out one total to rooms."""
+        if not self.cad_rooms or not self.hap_zone_data:
+            return
+        rooms_by_label = {}
+        for room in self.cad_rooms:
+            label = self._normalize_hap_identifier(room.label)
+            if label:
+                rooms_by_label.setdefault(label, []).append(room)
+        systems_by_name = {
+            self._normalize_hap_identifier(system.name): system
+            for system in self.systems
+            if self._normalize_hap_identifier(system.name)
+        }
+        zones_by_space = {}
+        for zone in self.hap_zone_data:
+            zones_by_space.setdefault(self._normalize_hap_identifier(zone.space_name), []).append(zone)
+
+        for zone in self.hap_zone_data:
+            identifier = self._normalize_hap_identifier(zone.space_name)
+            candidate_rooms = rooms_by_label.get(identifier, [])
+            same_named_zones = zones_by_space.get(identifier, [])
+            if not identifier or len(candidate_rooms) != 1 or len(same_named_zones) != 1:
+                continue
+            room = candidate_rooms[0]
+            room_id = room.room_id
+            existing = self.cad_room_loads.get(room_id, {})
+            existing_source = str(existing.get("source_reference", ""))
+            if existing_source.startswith(("USER_", "HAP_AUTO_")):
+                continue
+            system = systems_by_name.get(self._normalize_hap_identifier(zone.system_name))
+            if system is None:
+                continue
+            assigned_system = self.cad_room_systems.get(room_id)
+            if (not assigned_system
+                    or self._normalize_hap_identifier(assigned_system) != self._normalize_hap_identifier(zone.system_name)):
+                continue
+
+            single_zone_single_space = (
+                zone.zone_count == 1
+                and zone.space_count == 1
+                and math.isclose(zone.multiplier, 1.0)
+                and self._normalize_hap_identifier(zone.system_name) == identifier
+                and float(system.btu) > 0
+                and float(system.cfm) > 0
+                and abs(float(system.cfm) - zone.airflow_cfm) <= max(25.0, zone.airflow_cfm * 0.05)
+            )
+            self.cad_room_loads[room_id] = {
+                "cooling_load_btu": float(system.btu) if single_zone_single_space else 0.0,
+                "airflow_cfm": float(zone.airflow_cfm),
+                "sensible_load_btu": float(zone.sensible_load_btu),
+                "data_scope": "ZONE",
+                "system_id": zone.system_name,
+                "source_reference": (
+                    "HAP_AUTO_SINGLE_ZONE_COIL_PROXY"
+                    if single_zone_single_space
+                    else "HAP_AUTO_ZONE_SENSIBLE_AIRFLOW_ONLY"
+                ),
+            }
+            self.cad_room_verified.discard(room_id)
 
     def _on_cad_system_changed(self, room_id: str, combo):
         selected = combo.currentText().strip()
@@ -2050,15 +2152,118 @@ class HAPToCarrierApp(QMainWindow):
             self.cad_room_systems.pop(room_id, None)
         else:
             self.cad_room_systems[room_id] = selected
-        if hasattr(self, "cad_workspace"):
-            self.cad_workspace.refresh_assignments(
-                self.cad_room_systems, self.selected_units
+        self.cad_room_verified.discard(room_id)
+        existing = self.cad_room_loads.get(room_id, {})
+        if (str(existing.get("source_reference", "")).startswith("HAP_AUTO_")
+                and self._normalize_hap_identifier(existing.get("system_id", ""))
+                != self._normalize_hap_identifier(selected)):
+            self.cad_room_loads.pop(room_id, None)
+        self._refresh_cad_workflow()
+
+    def _on_cad_room_load_changed(self, row_index: int, column: int):
+        if getattr(self, "_rendering_cad_table", False) or column not in (5, 6, 7):
+            return
+        id_item = self.table_cad.item(row_index, 0)
+        if id_item is None:
+            return
+        room_id = id_item.text().strip()
+        values = []
+        for load_column in (5, 6, 7):
+            item = self.table_cad.item(row_index, load_column)
+            parsed = core.parse_user_number(item.text() if item else "")
+            if parsed is None:
+                QMessageBox.warning(
+                    self, "Invalid Room Load",
+                    "Room load, airflow, and sensible load must be finite, non-negative numbers.",
+                )
+                self._render_cad_rooms()
+                return
+            values.append(float(parsed))
+        if any(value < 0 or not math.isfinite(value) for value in values):
+            QMessageBox.warning(
+                self, "Invalid Room Load",
+                "Room load, airflow, and sensible load must be finite, non-negative numbers.",
             )
+            self._render_cad_rooms()
+            return
+        btu, cfm, sensible = values
+        if btu > 0 and cfm > 0:
+            self.cad_room_loads[room_id] = {
+                "cooling_load_btu": btu,
+                "airflow_cfm": cfm,
+                "sensible_load_btu": sensible,
+                "data_scope": "ROOM",
+                "source_reference": "USER_ENTERED_ROOM_LEVEL",
+            }
+        else:
+            self.cad_room_loads.pop(room_id, None)
+        self.cad_room_verified.discard(room_id)
+        self._refresh_cad_workflow()
+
+    def _on_cad_room_verified_changed(self, room_id: str, checked: bool):
+        if checked:
+            self.cad_room_verified.add(room_id)
+        else:
+            self.cad_room_verified.discard(room_id)
         self._update_cad_export_state()
+
+    def _refresh_cad_room_selections(self):
+        """Select Carrier equipment from verified room loads, never system totals."""
+        self.cad_room_selections = {}
+        for room_id, load in self.cad_room_loads.items():
+            try:
+                room_input = RoomLoadInput(
+                    room_id=room_id,
+                    cooling_load_btu=float(load.get("cooling_load_btu", 0.0)),
+                    airflow_cfm=float(load.get("airflow_cfm", 0.0)),
+                    sensible_load_btu=float(load.get("sensible_load_btu", 0.0)),
+                    data_scope=str(load.get("data_scope", "UNKNOWN")),
+                    source_reference=str(load.get("source_reference", "UNSPECIFIED")),
+                )
+                result = select_for_room(self.df, room_input, **self._filter_args())
+            except (TypeError, ValueError):
+                logger.exception("Invalid room-level selection inputs for %s", room_id)
+                continue
+            if result.status == "CANDIDATES_FOUND":
+                row = result.candidates.iloc[0].copy()
+                self.cad_room_selections[room_id] = {
+                    "units": 1,
+                    "row": row,
+                    "effective_btu": float(row.get("Effective Btu", 0.0) or 0.0),
+                    "load_btu": room_input.cooling_load_btu,
+                    "load_cfm": room_input.airflow_cfm,
+                }
+                continue
+            if result.status != "NO_MATCH":
+                continue
+            multi = core.multi_unit_options(
+                self.df,
+                room_input.cooling_load_btu,
+                room_input.airflow_cfm,
+                **self._filter_args(),
+            )
+            if multi.empty:
+                continue
+            option = multi.iloc[0]
+            model = str(option.get("System Model", ""))
+            catalog_rows = self.df[self.df["System Model"].astype(str) == model]
+            if catalog_rows.empty:
+                continue
+            row = catalog_rows.iloc[0].copy()
+            row["Effective Btu"] = float(option.get("Unit Btu", 0.0) or 0.0)
+            self.cad_room_selections[room_id] = {
+                "units": int(option.get("Units", 1)),
+                "row": row,
+                "effective_btu": float(option.get("Unit Btu", 0.0) or 0.0),
+                "load_btu": room_input.cooling_load_btu,
+                "load_cfm": room_input.airflow_cfm,
+            }
 
     def _render_cad_rooms(self):
         if not hasattr(self, "table_cad"):
             return
+        self._rendering_cad_table = True
+        self.table_cad.blockSignals(True)
         self.table_cad.setSortingEnabled(False)
         self.table_cad.setRowCount(len(self.cad_rooms))
         system_names = self._cad_system_names()
@@ -2081,11 +2286,25 @@ class HAPToCarrierApp(QMainWindow):
                 lambda _text, room_id=room.room_id, widget=combo: self._on_cad_system_changed(room_id, widget)
             )
             self.table_cad.setCellWidget(row_index, 4, combo)
-            entry = self.selected_units.get(current)
+            room_load = self.cad_room_loads.get(room.room_id, {})
+            for column, key in ((5, "cooling_load_btu"), (6, "airflow_cfm"), (7, "sensible_load_btu")):
+                value = room_load.get(key, "")
+                absent_total = key == "cooling_load_btu" and (value in (None, "") or float(value or 0) <= 0)
+                text = f"{float(value):g}" if value not in (None, "") and not absent_total else ""
+                item = QTableWidgetItem(text)
+                item.setToolTip(
+                    f"Source: {room_load.get('source_reference', 'Not entered')}. "
+                    "Review the source and confirm only this room/zone's design values. "
+                    "Do not copy an air-system total across multiple rooms."
+                )
+                self.table_cad.setItem(row_index, column, item)
+            entry = self.cad_room_selections.get(room.room_id)
             unit_text = "—"
             if entry:
                 unit_text = f"{entry.get('units', 1)}x {entry.get('row', {}).get('Indoor Unit Model', 'selected')}"
-            self.table_cad.setItem(row_index, 5, QTableWidgetItem(str(unit_text)))
+            elif room_load:
+                unit_text = "No match"
+            self.table_cad.setItem(row_index, 8, QTableWidgetItem(str(unit_text)))
             match = self.cad_matching.by_room_id().get(room.room_id) if self.cad_matching else None
             if match is None:
                 match_text, match_tip = "—", "No matching pass has run yet."
@@ -2100,13 +2319,35 @@ class HAPToCarrierApp(QMainWindow):
                     match_tip += f"\nRoom '{match.room_name}' was not assigned automatically."
             match_item = QTableWidgetItem(match_text)
             match_item.setToolTip(match_tip)
-            self.table_cad.setItem(row_index, 6, match_item)
+            self.table_cad.setItem(row_index, 9, match_item)
+            load_is_usable = (
+                float(room_load.get("cooling_load_btu", 0) or 0) > 0
+                and float(room_load.get("airflow_cfm", 0) or 0) > 0
+                and room.room_id in self.cad_room_selections
+            )
+            verified = QCheckBox("Verified")
+            verified.setChecked(room.room_id in self.cad_room_verified)
+            verified.setEnabled(load_is_usable)
+            verified.setToolTip(
+                "Confirm that the imported/entered design load, airflow, room-to-HAP link, and selected unit were reviewed."
+            )
+            verified.toggled.connect(
+                lambda checked, rid=room.room_id: self._on_cad_room_verified_changed(rid, checked)
+            )
+            self.table_cad.setCellWidget(row_index, 10, verified)
         self.table_cad.setSortingEnabled(True)
+        self.table_cad.blockSignals(False)
+        self._rendering_cad_table = False
         assigned = sum(1 for room in self.cad_rooms if self.cad_room_systems.get(room.room_id))
+        loaded = sum(
+            1 for room in self.cad_rooms
+            if float(self.cad_room_loads.get(room.room_id, {}).get("cooling_load_btu", 0) or 0) > 0
+            and float(self.cad_room_loads.get(room.room_id, {}).get("airflow_cfm", 0) or 0) > 0
+        )
         diag_text = f"; {len(self.cad_diagnostics)} geometry diagnostic(s)" if self.cad_diagnostics else ""
         match_text = f"; matching: {self.cad_matching.summary()}" if self.cad_matching else ""
         self.lbl_cad_status.setText(
-            f"{len(self.cad_rooms)} room(s) approved; {assigned} system assignment(s)"
+            f"{len(self.cad_rooms)} room(s); {assigned} HAP link(s); {loaded} room-level load(s)"
             f"{match_text}{diag_text}."
         )
         if hasattr(self, "btn_cad_review"):
@@ -2114,10 +2355,16 @@ class HAPToCarrierApp(QMainWindow):
         self._update_cad_export_state()
 
     def _update_cad_export_state(self):
-        ready = bool(self.cad_source_path and self.cad_rooms and any(
-            room.room_id in self.cad_room_systems and self.cad_room_systems[room.room_id] in self.selected_units
-            for room in self.cad_rooms
-        ))
+        ready = bool(
+            self.cad_source_path and self.hap_source_path and self.systems and self.cad_rooms
+            and all(
+                bool(self.cad_room_systems.get(room.room_id))
+                and room.room_id in self.cad_room_loads
+                and room.room_id in self.cad_room_selections
+                and room.room_id in self.cad_room_verified
+                for room in self.cad_rooms
+            )
+        )
         if hasattr(self, "btn_cad_export"):
             self.btn_cad_export.setEnabled(ready)
 
@@ -2125,19 +2372,22 @@ class HAPToCarrierApp(QMainWindow):
         if not self.cad_source_path:
             QMessageBox.information(self, "No CAD File", "Upload a DWG or DXF floor plan first.")
             return
+        if not self.hap_source_path or not self.systems:
+            QMessageBox.information(self, "No HAP Data", "Upload and parse a HAP report before exporting the paired project.")
+            return
         assignments = [
             RoomAssignment(room.room_id, self.cad_room_systems.get(room.room_id, ""))
             for room in self.cad_rooms
-            if self.cad_room_systems.get(room.room_id)
         ]
         indoor, relationships, warnings = build_indoor_placements(
-            self.cad_rooms, assignments, self.selected_units
+            self.cad_rooms, assignments, self.cad_room_selections, self.cad_room_loads
         )
-        if not indoor:
-            QMessageBox.warning(self, "No Indoor Units", "Assign rooms to systems and select units first.")
-            return
         if warnings:
-            QMessageBox.warning(self, "Incomplete CAD Mapping", "\n".join(warnings))
+            QMessageBox.warning(self, "Project Incomplete", "Resolve every room before export:\n\n" + "\n".join(warnings))
+            return
+        if not indoor:
+            QMessageBox.warning(self, "No Indoor Units", "Enter verified room loads and airflow, then review room-to-system links.")
+            return
         output, _ = QFileDialog.getSaveFileName(
             self, "Export HVAC DXF", "hvac_placed.dxf", "DXF Files (*.dxf)"
         )
@@ -2190,6 +2440,17 @@ class HAPToCarrierApp(QMainWindow):
 
     def _load_report(self, path: str):
         """Load a HAP report from `path` (dialog + drag-and-drop share this)."""
+        self.hap_source_path = path
+        self.cad_room_systems.clear()
+        self.cad_room_selections.clear()
+        self.cad_room_loads = {
+            room_id: load for room_id, load in self.cad_room_loads.items()
+            if not str(load.get("source_reference", "")).startswith("HAP_AUTO_")
+        }
+        self.cad_room_verified.clear()
+        self.hap_zone_data = []
+        if hasattr(self, "lbl_cad_hap_status"):
+            self.lbl_cad_hap_status.setText(f"HAP report: {os.path.basename(path)} · parsing…")
         self._ocr_job_id = getattr(self, "_ocr_job_id", 0) + 1
         job_id = self._ocr_job_id
         self.current_results = None
@@ -2262,8 +2523,15 @@ class HAPToCarrierApp(QMainWindow):
 
         # Batch: detect every system in this report (may be just one)
         self.systems = core.parse_all_systems(text)
+        self.hap_zone_data = parse_hap_zone_summaries(text)
         self._render_batch()
         self._refresh_cad_workflow()
+        if hasattr(self, "lbl_cad_hap_status"):
+            self.lbl_cad_hap_status.setText(
+                f"HAP report: {os.path.basename(self.hap_source_path)} · "
+                f"{len(self.systems)} system(s), {len(self.hap_zone_data)} zone/space row(s) parsed. "
+                "Imported values still require room-by-room engineering verification before export."
+            )
         # Single-system report → remember its name for export defaults
         if len(self.systems) == 1:
             self.current_system_name = self.systems[0].name

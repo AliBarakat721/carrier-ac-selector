@@ -97,9 +97,15 @@ def _system_entry(selected_units: Mapping[str, Mapping[str, object]], system_id:
 def build_indoor_placements(
     rooms: Sequence[RoomSpace],
     assignments: Sequence[RoomAssignment],
-    selected_units: Mapping[str, Mapping[str, object]],
+    room_selections: Mapping[str, Mapping[str, object]],
+    room_loads: Mapping[str, Mapping[str, object]],
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[str]]:
-    """Build indoor-unit records, relationships, and human-readable warnings."""
+    """Build room-based placements without falling back to system-level HAP data.
+
+    Every room needs its own verified cooling load and airflow, and its own
+    Carrier selection based on those values. An aggregate HAP system total is
+    never copied to each assigned room.
+    """
 
     room_by_id = {room.room_id: room for room in rooms}
     records: list[dict[str, object]] = []
@@ -108,12 +114,24 @@ def build_indoor_placements(
     for assignment in assignments:
         room = room_by_id.get(assignment.room_id)
         system_id = _text(assignment.system_id)
-        entry = _system_entry(selected_units, system_id)
         if room is None:
             warnings.append(f"UNKNOWN_ROOM:{assignment.room_id}")
             continue
-        if not system_id or entry is None:
-            warnings.append(f"NO_SELECTED_UNIT:{room.room_id}:{system_id or 'UNASSIGNED'}")
+        if not system_id:
+            warnings.append(f"UNASSIGNED_HAP_SYSTEM:{room.room_id}")
+            continue
+        load = room_loads.get(room.room_id)
+        if not load:
+            warnings.append(f"MISSING_ROOM_LOAD:{room.room_id}")
+            continue
+        load_btu = _number(load.get("cooling_load_btu"), 0.0)
+        load_cfm = _number(load.get("airflow_cfm"), 0.0)
+        if load_btu <= 0 or load_cfm <= 0:
+            warnings.append(f"INVALID_ROOM_LOAD:{room.room_id}")
+            continue
+        entry = _system_entry(room_selections, room.room_id)
+        if entry is None:
+            warnings.append(f"NO_ROOM_UNIT_SELECTION:{room.room_id}")
             continue
         row = entry.get("row", {})
         count = max(1, int(_number(entry.get("units", 1), 1)))
@@ -124,7 +142,7 @@ def build_indoor_placements(
             angle = 2.0 * math.pi * index / count if count > 1 else 0.0
             entity_id = f"IDU-{system_id}-{room.room_id}-{index + 1:02d}"
             tag_id = f"IDU-{room.room_id}-{index + 1:02d}"
-            load_btu = _number(entry.get("load_btu"), 0.0) / count
+            per_unit_load_btu = load_btu / count
             capacity_kw = _capacity_kw(row, entry)
             capacity_mbh = capacity_kw * 3.41214
             airflow = _number(_row_value(row, "High CFM (numeric)"), 0.0)
@@ -138,13 +156,13 @@ def build_indoor_placements(
                 "CAPACITY_KW": capacity_kw,
                 "CAPACITY_MBH": capacity_mbh,
                 "AIRFLOW_CFM": airflow,
-                "HAP_LOAD_KW": load_btu / 3412.14,
+                "HAP_LOAD_KW": per_unit_load_btu / 3412.14,
                 "CAPACITY_STATUS": "SELECTED",
-                "CAPACITY_MARGIN_PCT": ((capacity_kw - load_btu / 3412.14) / (load_btu / 3412.14) * 100.0) if load_btu > 0 else None,
+                "CAPACITY_MARGIN_PCT": ((capacity_kw - per_unit_load_btu / 3412.14) / (per_unit_load_btu / 3412.14) * 100.0) if per_unit_load_btu > 0 else None,
                 "SYSTEM_ID": system_id,
                 "SELECTION_STATUS": "SELECTED",
-                "DATA_VERIFICATION": "HAP_AND_CARRIER_SELECTED",
-                "SOURCE_REFERENCE": "Carrier AC Selector CAD/HAP workflow",
+                "DATA_VERIFICATION": _text(load.get("source_reference")) or "ENGINEER_CONFIRMED_ROOM_LOAD",
+                "SOURCE_REFERENCE": _text(load.get("source_reference")) or "Engineer-confirmed room-level load",
                 "POSITION": position,
             })
             relationships.append({"SYSTEM_ID": system_id, "ENTITY_ID": entity_id, "ROLE": "INDOOR"})

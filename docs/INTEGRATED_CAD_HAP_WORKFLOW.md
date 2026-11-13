@@ -17,10 +17,18 @@ The workflow must support any number of spaces. No fixed 15/30-room limit is all
 
 The current HAP parser exposes `SystemLoad` records (system name, total coil BTU/h, CFM and sensible BTU/h). A system total is **not** a room load. If one air system serves multiple spaces, its total load/airflow must never be copied to every space or divided by area without an approved, explicit allocation method.
 
-The first integration release therefore supports:
-- mapping one or more CAD spaces to an HAP air system;
-- room-level load/airflow supplied by a room-level HAP source when available, or entered/confirmed by the engineer;
-- blocking room-level selection when only aggregate system data exists.
+The integrated CAD screen now parses HAP `Zone Sizing Summary` space rows when present. It imports sensible load and airflow only after a unique CAD-label/HAP-space match. A total coil load is used as a room/zone proxy only when the report shows one zone, one space, multiplier 1, the space and system names match, the CAD label is unique, the room is explicitly assigned to that system, and system/zone airflow is within tolerance. That proxy is marked as HAP-derived and requires explicit engineer verification. In all other cases the total cooling load remains blank; system totals are never duplicated or area-allocated across rooms.
+
+The first integrated release supports:
+- pairing one DXF and one HAP report in a project;
+- matching CAD room labels to HAP systems and HAP zone/space names without position-based guessing;
+- importing room/zone sensible load and airflow when the report provides them;
+- requiring an explicit room-level total cooling load when HAP only provides aggregate or multi-space totals;
+- automatic Carrier unit suggestions per room, with export blocked until every room's data and HAP link are reviewed and marked verified.
+
+### Sample report rule
+
+The checked-in parser tests mirror the structure observed in the supplied HAP RTF report. Its `Space Loads and Airflows` table provides cooling sensible load, peak airflow, heating load, and area; it does **not** provide a total cooling load per space. The sample's systems each report one zone and one same-named space, so the app may prefill the system coil total only as a conservative, explicitly labeled single-zone proxy. Treat this as an import aid, not a certified room-load calculation; the engineer must confirm it against the source report and project design basis before checking `Load Verified`.
 
 ## Architecture boundaries
 
@@ -41,7 +49,7 @@ DXF + HAP report + Carrier catalogue
               |
    CAD spaces <-> HAP systems
               |
-  Engineer confirms room-level loads
+  HAP zone/space import + engineer verification
               |
     Carrier selection per room/zone
               |
@@ -59,7 +67,7 @@ DXF + HAP report + Carrier catalogue
 ### Phase 1 — Integration contracts
 - Add typed project, CAD-space, HAP-system, room-load and selection records.
 - Add deterministic room/system mapping with explicit ambiguity and unmatched states.
-- Preserve source values and provenance; never infer room loads from system totals.
+- Preserve source values and provenance; never infer room loads from system totals except the documented, review-required one-zone/one-space proxy.
 - Tests: exact-name match, normalized-name match, explicit override, ambiguous match, unmatched room, multiple rooms on one system, and aggregate-only load guard.
 
 ### Phase 2 — Project input orchestration
@@ -69,7 +77,7 @@ DXF + HAP report + Carrier catalogue
 - Tests: valid DXF + multi-system HAP fixture, invalid DXF, missing file, empty/unparseable HAP, unknown drawing units.
 
 ### Phase 3 — Room-level Carrier selection
-- Require explicit room-level BTU/h, CFM and optional sensible load.
+- Require room-level BTU/h, CFM and optional sensible load; blank total cooling load is a hard block.
 - Call `core.load_database` and `core.select_units`; do not reimplement catalogue filtering.
 - Retain selection inputs, selected row, source references and warnings.
 - Tests: valid selection, no match, invalid/non-finite inputs, missing room load, catalogue compatibility and multi-room scalability.
@@ -84,11 +92,11 @@ DXF + HAP report + Carrier catalogue
 ### Phase 5 — DXF/UI integration
 - Add a dedicated project workflow screen: Import → Space Review → HAP Mapping → Room Loads → Selection → Placement Review → Export.
 - Show CAD preview and room/unit selection state; manual drag/rotate updates the project model.
-- Export only approved/reviewed records through `export_hvac_dxf`; original DXF remains unchanged.
+- Export only complete, room-by-room verified records through `export_hvac_dxf`; original DXF remains unchanged.
 - Tests: UI-independent controller tests, stable entity IDs, repeated export without duplicates, DXF reopen/attribute checks.
 
 ### Phase 6 — Windows distribution and end-to-end acceptance
-- Include `integration/` and `cad/` in Windows release artifacts and secure updater allowlists.
+- Include `integration/` and `cad/` in Windows release artifacts and both secure updater allowlists.
 - Test fresh install, update, rollback, and launch on Windows.
 - End-to-end fixture: multiple rooms (including 15, 30 and larger generated cases), multi-system HAP, room-level selections, placement review, DXF + CSV/XLSX + Word output.
 - Require CI on Ubuntu and Windows, then manual acceptance with a real AutoCAD DXF and real HAP report.

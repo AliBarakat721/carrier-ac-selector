@@ -49,8 +49,22 @@ def test_aggregate_only_hap_data_cannot_be_used_as_room_load(monkeypatch):
     def should_not_run(*args, **kwargs):
         raise AssertionError("Carrier selection must not run without room-level inputs")
     monkeypatch.setattr("integration.selection_adapter.core.select_units", should_not_run)
-    result = select_for_room(pd.DataFrame(), RoomLoadInput("G01", 0, 0))
+    result = select_for_room(
+        pd.DataFrame(),
+        RoomLoadInput("G01", 0, 0, data_scope="ROOM", source_reference="ENGINEER_CONFIRMED"),
+    )
     assert result.status == "BLOCKED_MISSING_ROOM_LOAD"
+
+
+def test_positive_system_total_is_blocked_from_room_selection(monkeypatch):
+    def should_not_run(*args, **kwargs):
+        raise AssertionError("A system total must not be passed into room selection")
+    monkeypatch.setattr("integration.selection_adapter.core.select_units", should_not_run)
+    result = select_for_room(
+        pd.DataFrame(),
+        RoomLoadInput("G01", 100_000, 2_000, data_scope="SYSTEM", source_reference="HAP_SYSTEM_TOTAL"),
+    )
+    assert result.status == "BLOCKED_UNVERIFIED_LOAD_SCOPE"
 
 
 def test_room_selection_delegates_to_existing_core_engine(monkeypatch):
@@ -60,7 +74,10 @@ def test_room_selection_delegates_to_existing_core_engine(monkeypatch):
         captured.update(btu=btu, cfm=cfm, kwargs=kwargs)
         return marker
     monkeypatch.setattr("integration.selection_adapter.core.select_units", fake_select)
-    load = RoomLoadInput("G01", 50_000, 900, sensible_load_btu=35_000)
+    load = RoomLoadInput(
+        "G01", 50_000, 900, sensible_load_btu=35_000,
+        data_scope="ROOM", source_reference="ENGINEER_CONFIRMED",
+    )
     result = select_for_room(pd.DataFrame(), load, safety_pct=5)
     assert result.status == "CANDIDATES_FOUND"
     assert result.candidates is marker
@@ -71,7 +88,10 @@ def test_room_selection_delegates_to_existing_core_engine(monkeypatch):
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1])
 def test_invalid_room_load_values_are_rejected(bad):
     with pytest.raises(ValueError):
-        select_for_room(pd.DataFrame(), RoomLoadInput("G01", bad, 900))
+        select_for_room(
+            pd.DataFrame(),
+            RoomLoadInput("G01", bad, 900, data_scope="ROOM", source_reference="ENGINEER_CONFIRMED"),
+        )
 
 
 def test_inspect_project_reads_dxf_and_hap_without_distributing_system_load(tmp_path, monkeypatch):

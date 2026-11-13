@@ -254,7 +254,7 @@ class CadViewport(QGraphicsView):
                 if start and end:
                     item = self.scene.addLine(start[0], -start[1], end[0], -end[1], pen)
                     self._register(item, layer, entity)
-            elif kind in {"LWPOLYLINE", "POLYLINE", "SPLINE"}:
+            elif kind in {"LWPOLYLINE", "POLYLINE", "SPLINE", "SOLID"}:
                 points = data.get("points", [])
                 if len(points) > 1:
                     path = QPainterPath()
@@ -562,8 +562,9 @@ class ProjectBrowser(QFrame):
                 item.setCheckState(0, state)  # emits itemChanged -> layer_toggled
 
     # -- project tree -------------------------------------------------------
-    def set_project_state(self, document, rooms, selected_units=None):
-        selected_units = selected_units or {}
+    def set_project_state(self, document, rooms, assignments=None, room_selections=None):
+        assignments = assignments or {}
+        room_selections = room_selections or {}
         self.tree.clear()
         root = QTreeWidgetItem(["Carrier HVAC project"])
         self.tree.addTopLevelItem(root)
@@ -577,10 +578,17 @@ class ProjectBrowser(QFrame):
             item = QTreeWidgetItem([room.label or room.room_id])
             item.setData(0, Qt.UserRole, room.room_id)
             building.addChild(item)
-        root.addChild(QTreeWidgetItem([f"HAP Systems  ({len(selected_units)})"]))
+        hap_systems = {str(name) for name in assignments.values() if str(name).strip()}
+        root.addChild(QTreeWidgetItem([f"HAP Systems  ({len(hap_systems)})"]))
         equipment = QTreeWidgetItem(["Equipment"])
         root.addChild(equipment)
-        equipment.addChild(QTreeWidgetItem([f"Indoor Units  ({len(selected_units)})"]))
+        indoor_units = 0
+        for entry in room_selections.values():
+            try:
+                indoor_units += max(0, int(entry.get("units", 1)))
+            except (AttributeError, TypeError, ValueError):
+                continue
+        equipment.addChild(QTreeWidgetItem([f"Indoor Units  ({indoor_units})"]))
         equipment.addChild(QTreeWidgetItem(["Outdoor Units  (manual placement)"]))
         reports = QTreeWidgetItem(["Reports"])
         root.addChild(reports)
@@ -666,7 +674,7 @@ class CadWorkspace(QWidget):
             ("rotate", "Rotate", "move_rotate"),
             ("scale", "Scale", "scale"),
             ("delete", "Delete", "delete"),
-            ("undo", "Undo", "back"),
+            ("undo", "Undo", "undo"),
             ("select", "Select", "cursor"),
         ):
             tool = QPushButton(label)
@@ -675,6 +683,7 @@ class CadWorkspace(QWidget):
             if mode == "select":
                 tool.setChecked(True)
             tool.setIcon(_icon(self.project_root, icon_name))
+            tool.setProperty("icon_name", icon_name)
             tool.setIconSize(QSize(16, 16))
             tool.setToolTip(label)
             if mode == "undo":
@@ -869,7 +878,7 @@ class CadWorkspace(QWidget):
         self.assignments = dict(assignments or {})
         self.selected_units = selected_units or {}
         self.viewport.render_document(document, self.rooms)
-        self.browser.set_project_state(document, self.rooms, self.selected_units)
+        self.browser.set_project_state(document, self.rooms, self.assignments, self.selected_units)
         self.room_list.clear()
         for room in self.rooms:
             item = QListWidgetItem(f"{room.label or room.room_id}   ·   {room.status}")
@@ -892,7 +901,7 @@ class CadWorkspace(QWidget):
 
     def _select_room(self, room):
         assignment = self.assignments.get(room.room_id, "Unassigned")
-        entry = self.selected_units.get(assignment, {})
+        entry = self.selected_units.get(room.room_id, {}) or self.selected_units.get(assignment, {})
         row = entry.get("row", {}) if isinstance(entry, dict) else {}
         unit = row.get("Indoor Unit Model", "Not selected") if row is not None else "Not selected"
         self.properties.show_room(room, assignment, str(unit))
@@ -902,6 +911,9 @@ class CadWorkspace(QWidget):
         self.assignments = dict(assignments or {})
         if selected_units is not None:
             self.selected_units = selected_units
+        self.browser.set_project_state(
+            self.document, self.rooms, self.assignments, self.selected_units
+        )
         for index in range(self.room_list.count()):
             item = self.room_list.item(index)
             room_id = item.data(Qt.UserRole)

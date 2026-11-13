@@ -21,13 +21,18 @@ class HAPSystemRecord:
 
 @dataclass(frozen=True)
 class RoomLoadInput:
-    """Room-level design data; never populate this from a system total implicitly."""
+    """Design input whose scope must be room/zone, never an aggregate system."""
     room_id: str
     cooling_load_btu: float
     airflow_cfm: float
     sensible_load_btu: float = 0.0
     system_id: str | None = None
-    source_reference: str = "ENGINEER_INPUT"
+    data_scope: str = "UNKNOWN"
+    source_reference: str = "UNSPECIFIED"
+
+    @property
+    def is_room_level(self) -> bool:
+        return self.data_scope.strip().upper() in {"ROOM", "ZONE"}
 
 
 @dataclass(frozen=True)

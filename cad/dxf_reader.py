@@ -229,6 +229,19 @@ def _entity_data(entity: DXFGraphic) -> dict[str, Any]:
     kind = entity.dxftype()
     if kind == "LINE":
         return {"start": _point(entity.dxf.start), "end": _point(entity.dxf.end)}
+    if kind == "SOLID":
+        # A 2D SOLID is a filled triangular or quadrilateral boundary.  Use
+        # WCS vertices so SOLIDs expanded from INSERT blocks retain the same
+        # transform semantics as the other CAD geometry.
+        points = [_point(vertex) for vertex in entity.wcs_vertices()]
+        # ezdxf exposes SOLID vertices in DXF storage order v0, v1, v3, v2.
+        # Restore perimeter order before constructing a Shapely polygon.
+        if len(points) == 4:
+            if points[2] == points[3]:
+                points = points[:3]
+            else:
+                points = [points[0], points[1], points[3], points[2]]
+        return {"points": points, "closed": len(points) >= 3}
     if kind == "LWPOLYLINE":
         points = list(entity.get_points("xyseb"))
         return {

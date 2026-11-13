@@ -256,7 +256,8 @@ def test_r6_current_multi_unit_positions_are_closer_than_the_unit_width():
     records, _, warnings = build_indoor_placements(
         [_room("ROOM-001", "Office")],
         [RoomAssignment("ROOM-001", "G01")],
-        {"G01": _selected(units=2)},
+        {"ROOM-001": _selected(units=2)},
+        {"ROOM-001": {"cooling_load_btu": 36_000, "airflow_cfm": 800}},
     )
 
     assert not warnings
@@ -272,7 +273,8 @@ def test_r6_multi_unit_placements_do_not_overlap():
     records, _, _ = build_indoor_placements(
         [_room("ROOM-001", "Office")],
         [RoomAssignment("ROOM-001", "G01")],
-        {"G01": _selected(units=2)},
+        {"ROOM-001": _selected(units=2)},
+        {"ROOM-001": {"cooling_load_btu": 36_000, "airflow_cfm": 800}},
     )
 
     distance = math.dist(records[0]["POSITION"], records[1]["POSITION"])

@@ -121,6 +121,8 @@ def test_legacy_cad_payload_and_supported_package_trees_are_accepted(tmp_path):
             "cad/__init__.py": "# legacy installer requires this package\n",
             "cad/nested/reader.py": "# source\n",
             "engineering/electrical/checks.py": "# source\n",
+            "integration/hap_zone_parser.py": "# source\n",
+            "integration/selection_adapter.py": "# source\n",
             "ui/__init__.py": "# source\n",
         },
     )

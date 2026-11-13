@@ -45,7 +45,7 @@ jobs:
         run: |
           python -m pip install -r requirements-dev.txt
           if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
-          $packageDirs = @(@("cad", "engineering", "equipment", "hap", "reports", "ui") |
+          $packageDirs = @(@("cad", "engineering", "equipment", "hap", "integration", "reports", "ui") |
             Where-Object { Test-Path -LiteralPath $_ -PathType Container })
           $files = @()
           if ($packageDirs.Count -gt 0) {
@@ -97,7 +97,7 @@ jobs:
             throw "The application data directory is missing."
           }
           Copy-Item -LiteralPath "data" -Destination (Join-Path $stage "data") -Recurse
-          foreach ($directory in @("cad", "engineering", "equipment", "hap", "reports", "ui")) {
+          foreach ($directory in @("cad", "engineering", "equipment", "hap", "integration", "reports", "ui")) {
             if (Test-Path -LiteralPath $directory -PathType Container) {
               $sourceFiles = Get-ChildItem -LiteralPath $directory -Filter *.py -File -Recurse |
                 Where-Object { $_.FullName -notmatch '[\\/]__pycache__[\\/]' }
@@ -134,7 +134,7 @@ jobs:
       - name: Test fresh v2.0.1 install and real in-place update
         shell: pwsh
         run: |
-          $packageDirs = @(@("cad", "engineering", "equipment", "hap", "reports", "ui") |
+          $packageDirs = @(@("cad", "engineering", "equipment", "hap", "integration", "reports", "ui") |
             Where-Object { Test-Path -LiteralPath $_ -PathType Container })
           if ($packageDirs.Count -eq 0) {
           $legacy = Join-Path $env:RUNNER_TEMP "carrier-v2.0.1-install"

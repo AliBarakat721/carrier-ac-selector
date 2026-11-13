@@ -4,7 +4,7 @@
 
 The Windows updater validates the ZIP before changing the installation. Each installation runs the `apply_update.ps1` that shipped with it; replacing that script inside a new archive cannot help if the old script rejects the archive first.
 
-The published v2.0.1 updater accepts its fixed list of root-level application files and the two supported `data/` files. It rejects package directories such as `cad/`, `engineering/`, `equipment/`, `hap/`, `reports/`, and `ui/`. Some pre-release updater builds used a different fixed allow-list and required a fixed set of CAD files; those builds also cannot be assumed to accept newer package layouts.
+The published v2.0.1 updater accepts its fixed list of root-level application files and the two supported `data/` files. It rejects package directories such as `cad/`, `engineering/`, `equipment/`, `hap/`, `integration/`, `reports/`, and `ui/`. Some pre-release updater builds used a different fixed allow-list and required a fixed set of CAD files; those builds also cannot be assumed to accept newer package layouts.
 
 A release containing only the root files and supported `data/` files can be applied by the published v2.0.1 updater. Once a release includes source under any package directory, older installations cannot safely self-update through that old helper. Treat the first such release as a manual migration for those installations; announce this limitation in its release notes. After migration, the new updater accepts Python files under the explicitly supported package directories for subsequent updates.
 

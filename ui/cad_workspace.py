@@ -79,32 +79,37 @@ def _swatch(color: QColor, size: int = 14) -> QIcon:
 LIGHT_STYLESHEET = """
 CadWorkspace, CadWorkspace QWidget { background-color: #f4f6f8; color: #1f2933;
     font-family: 'Segoe UI', Arial, sans-serif; font-size: 12px; }
-QFrame#cad_toolbar { background-color: #fbfcfd; border-bottom: 1px solid #c9d0d8; }
-QFrame#cad_footer { background-color: #eceff2; border-top: 1px solid #c9d0d8; }
+QFrame#cad_toolbar { background-color: #ffffff; border-bottom: 1px solid #d5dce5; }
+QFrame#cad_footer { background-color: #f8fafc; border-top: 1px solid #d5dce5; }
 QFrame#cad_footer QLabel { color: #4b5563; font-size: 11px; padding: 0 6px; background: transparent; }
-QLabel#workspace_title { color: #1f2933; font-weight: 700; letter-spacing: 1px; }
-QLabel#cad_status { color: #4b5563; padding-left: 12px; }
-QFrame#project_browser, QFrame#properties_inspector { background-color: #f4f6f8; border: none;
-    border-right: 1px solid #c9d0d8; }
-QFrame#properties_inspector { border-right: none; border-left: 1px solid #c9d0d8; }
-QLabel#panel_title { color: #374151; font-size: 11px; font-weight: 700; letter-spacing: 1px;
-    padding: 2px 0 6px 0; border-bottom: 1px solid #d5dbe1; }
+QLabel#workspace_title { color: #172b4d; font-weight: 800; letter-spacing: 1.2px; padding-right: 8px; }
+QLabel#cad_status { color: #53657a; padding: 6px 12px; background: #f3f6fa; border: 1px solid #e1e7ef; border-radius: 6px; }
+QFrame#project_browser, QFrame#properties_inspector { background-color: #f8fafc; border: none;
+    border-right: 1px solid #d5dce5; }
+QFrame#properties_inspector { border-right: none; border-left: 1px solid #d5dce5; }
+QLabel#panel_title { color: #52647a; font-size: 10px; font-weight: 800; letter-spacing: 1.15px;
+    padding: 4px 0 8px 0; border-bottom: 1px solid #e2e8f0; }
 QLabel#property_value { color: #1f2933; }
-QTreeWidget, QListWidget { background: #ffffff; color: #1f2933; border: 1px solid #d5dbe1; }
-QTreeWidget::item { padding: 2px 0; }
-QTreeWidget::item:hover, QListWidget::item:hover { background: #e8f0fb; }
-QTreeWidget::item:selected, QListWidget::item:selected { background: #bcd7f7; color: #0b2a6f; }
-QPushButton { background-color: #ffffff; color: #1f2933; border: 1px solid #b8c1cb;
-    border-radius: 3px; padding: 5px 12px; font-weight: 600; }
-QPushButton:hover { background-color: #e8f0fb; border-color: #2f6fb5; }
-QPushButton:pressed { background-color: #d3e4f8; }
-QPushButton#btn_success { background-color: #2f6fb5; color: #ffffff; border-color: #2a5f9c; }
-QPushButton#btn_success:hover { background-color: #3a80cc; }
-QSplitter::handle { background: #c9d0d8; }
-QScrollBar:vertical { background: #eceff2; width: 10px; }
-QScrollBar::handle:vertical { background: #b8c1cb; border-radius: 4px; min-height: 24px; }
-QScrollBar:horizontal { background: #eceff2; height: 10px; }
-QScrollBar::handle:horizontal { background: #b8c1cb; border-radius: 4px; min-width: 24px; }
+QTreeWidget, QListWidget { background: #ffffff; color: #24364b; border: 1px solid #e0e6ee; border-radius: 7px; padding: 4px; }
+QTreeWidget::item, QListWidget::item { padding: 4px 5px; border-radius: 4px; }
+QTreeWidget::item:hover, QListWidget::item:hover { background: #edf4fc; }
+QTreeWidget::item:selected, QListWidget::item:selected { background: #dbeafe; color: #12437a; }
+QPushButton { background-color: #ffffff; color: #31445b; border: 1px solid #d5dde7;
+    border-radius: 6px; padding: 6px 10px; font-weight: 600; }
+QPushButton:hover { background-color: #f0f6ff; border-color: #8bb8ed; color: #174f8a; }
+QPushButton:pressed { background-color: #dbeafe; }
+QPushButton:checked { background: #e4f0ff; color: #1456a0; border-color: #76a9e5; }
+QPushButton#btn_success { background-color: #1769aa; color: #ffffff; border-color: #155b92; }
+QPushButton#btn_success:hover { background-color: #247dc2; }
+QFrame#cad_canvas_shell { background: #e8edf3; border: 1px solid #d7dfe8; border-radius: 8px; }
+QGraphicsView#cad_viewport { background: #ffffff; border: none; border-radius: 8px; }
+QSplitter::handle { background: #d5dce5; }
+QSplitter::handle:hover { background: #9bbbe0; }
+QScrollBar:vertical { background: #f1f4f8; width: 10px; margin: 2px; }
+QScrollBar::handle:vertical { background: #c2ccd8; border-radius: 4px; min-height: 24px; }
+QScrollBar::handle:vertical:hover { background: #9eacbd; }
+QScrollBar:horizontal { background: #f1f4f8; height: 10px; margin: 2px; }
+QScrollBar::handle:horizontal { background: #c2ccd8; border-radius: 4px; min-width: 24px; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 """
 
@@ -130,6 +135,7 @@ class CadViewport(QGraphicsView):
         self.setScene(self.scene)
         self.setRenderHint(QPainter.Antialiasing)
         self.setBackgroundBrush(PALETTE["canvas"])
+        self.setObjectName("cad_viewport")
         self.setDragMode(QGraphicsView.RubberBandDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self._rooms = []
@@ -138,12 +144,15 @@ class CadViewport(QGraphicsView):
         self._mode = "select"
         self._pending_point = None
         self._move_entity = None
+        self._preview_item = None
+        self._cursor_world_point = None
         self._draw_grid()
 
     def set_mode(self, mode: str):
         self._mode = mode
         self._pending_point = None
         self._move_entity = None
+        self._clear_preview()
         prompts = {
             "select": "Select · click a CAD entity or room",
             "line": "Draw line · click start, then end",
@@ -191,6 +200,7 @@ class CadViewport(QGraphicsView):
         self.scene.clear()
         self._room_items.clear()
         self._layer_items.clear()
+        self._preview_item = None
         self._draw_grid()
 
     def render_document(self, document, rooms: Iterable[object] = ()):
@@ -286,6 +296,38 @@ class CadViewport(QGraphicsView):
             label.setZValue(10)
             self.scene.addItem(label)
 
+    def _clear_preview(self):
+        if self._preview_item is not None:
+            self.scene.removeItem(self._preview_item)
+            self._preview_item = None
+
+    def mouseMoveEvent(self, event):
+        point = self.mapToScene(event.position().toPoint())
+        self._cursor_world_point = (float(point.x()), -float(point.y()))
+        if self._mode in {"line", "rectangle", "circle"} and self._pending_point is not None:
+            self._update_drawing_preview(self._pending_point, self._cursor_world_point)
+        super().mouseMoveEvent(event)
+
+    def _update_drawing_preview(self, first, current):
+        self._clear_preview()
+        x1, y1 = first
+        x2, y2 = current
+        path = QPainterPath()
+        if math.isclose(x1, x2) and math.isclose(y1, y2):
+            path.addEllipse(QPointF(x1, -y1), 3.5, 3.5)
+        elif self._mode == "line":
+            path.moveTo(x1, -y1)
+            path.lineTo(x2, -y2)
+        elif self._mode == "rectangle":
+            path.addRect(QRectF(QPointF(x1, -y1), QPointF(x2, -y2)).normalized())
+        elif self._mode == "circle":
+            radius = math.hypot(x2 - x1, y2 - y1)
+            path.addEllipse(QRectF(x1 - radius, -y1 - radius, radius * 2, radius * 2))
+        pen = QPen(QColor("#1769aa"), 1.6, Qt.DashLine)
+        pen.setCosmetic(True)
+        self._preview_item = self.scene.addPath(path, pen, QBrush(Qt.NoBrush))
+        self._preview_item.setZValue(1000)
+
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton and self._mode in {"line", "rectangle", "circle"}:
             point = self.mapToScene(event.position().toPoint())
@@ -293,8 +335,10 @@ class CadViewport(QGraphicsView):
             if self._pending_point is None:
                 self._pending_point = world_point
                 self.prompt_changed.emit("First point set · click the second point to finish")
+                self._update_drawing_preview(world_point, world_point)
             else:
                 first, self._pending_point = self._pending_point, None
+                self._clear_preview()
                 x1, y1 = first
                 x2, y2 = world_point
                 if math.isclose(x1, x2) and math.isclose(y1, y2):
@@ -533,8 +577,11 @@ class CadWorkspace(QWidget):
         root.setSpacing(0)
         toolbar = QFrame()
         toolbar.setObjectName("cad_toolbar")
-        row = QHBoxLayout(toolbar)
-        row.setContentsMargins(12, 8, 12, 8)
+        toolbar_layout = QVBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(12, 8, 12, 7)
+        toolbar_layout.setSpacing(7)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
         title = QLabel("CAD WORKSPACE")
         title.setObjectName("workspace_title")
         row.addWidget(title)
@@ -552,6 +599,11 @@ class CadWorkspace(QWidget):
         export_button.setObjectName("btn_success")
         export_button.clicked.connect(self.request_export.emit)
         row.addWidget(export_button)
+        toolbar_layout.addLayout(row)
+        tool_row = QHBoxLayout()
+        tool_row.setContentsMargins(0, 0, 0, 0)
+        tool_row.setSpacing(6)
+        tool_row.addWidget(QLabel("TOOLS"))
         self.tool_buttons = {}
         for mode, label, icon_name in (
             ("line", "Draw line", "line_2p"),
@@ -563,12 +615,20 @@ class CadWorkspace(QWidget):
             ("select", "Select", "cursor"),
         ):
             tool = QPushButton(label)
+            tool.setCheckable(mode != "undo")
+            if mode == "select":
+                tool.setChecked(True)
             tool.setIcon(_icon(self.project_root, icon_name))
             tool.setIconSize(QSize(16, 16))
             tool.setToolTip(label)
-            tool.clicked.connect(lambda _checked=False, value=mode: self.viewport.set_mode(value))
+            if mode == "undo":
+                tool.clicked.connect(self._undo_edit)
+            else:
+                tool.clicked.connect(lambda _checked=False, value=mode: self._activate_tool(value))
             self.tool_buttons[mode] = tool
-            row.addWidget(tool)
+            tool_row.addWidget(tool)
+        tool_row.addStretch()
+        toolbar_layout.addLayout(tool_row)
         root.addWidget(toolbar)
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self.browser)
@@ -602,6 +662,12 @@ class CadWorkspace(QWidget):
         self.browser.room_clicked.connect(self._select_room_by_id)
         self.browser.layer_toggled.connect(self.viewport.set_layer_visible)
         self._edit_history = []
+
+    def _activate_tool(self, mode: str):
+        self.viewport.set_mode(mode)
+        for name, button in self.tool_buttons.items():
+            if name != "undo":
+                button.setChecked(name == mode)
 
     def _remember_entities(self):
         if self.document is not None:

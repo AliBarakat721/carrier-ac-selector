@@ -45,6 +45,7 @@ from cad.room_review import RoomReviewSession
 from room_review_dialog import RoomReviewDialog
 from cad.workflow import RoomAssignment, build_indoor_placements, match_room_systems
 from version import APP_VERSION
+from logging_setup import configure_logging, default_log_path
 import math
 
 logger = logging.getLogger(__name__)
@@ -4520,6 +4521,18 @@ class HAPToCarrierApp(QMainWindow):
 
 # ── Entry Point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    # Must run before the QApplication so early failures are captured. Under
+    # pythonw.exe there is no console, so this file is the only diagnostic
+    # trail for logger.exception(...) calls in the GUI.
+    log_path = configure_logging()
+    if log_path is not None:
+        logger.info("Starting %s; log file: %s", APP_VERSION, log_path)
+    else:
+        logger.warning(
+            "Could not open a log file at %s; continuing without file logging.",
+            default_log_path(),
+        )
+
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )

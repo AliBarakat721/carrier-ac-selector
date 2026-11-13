@@ -307,6 +307,9 @@ def compute_schedule_summary(
         raise ValueError("compute_schedule_summary: grouped_circuits must be a positive integer.")
 
     if not unit_rows:
+        # Keep the key set identical to the populated branch below so callers
+        # can index the summary unconditionally. With no load there is nothing
+        # to violate, so the two verification flags are reported as True.
         return {
             "total_kw": 0.0,
             "total_fla": 0.0,
@@ -317,6 +320,10 @@ def compute_schedule_summary(
             "main_cable": 0,
             "main_cable_desc": "—",
             "main_vdrop_pct": 0.0,
+            "main_cable_ampacity_ok": True,
+            "main_mcb_ok": True,
+            "install_method": install_method,
+            "grouped_circuits": grouped_circuits,
             "generator_kva": 0.0,
             "ups_kva": 0.0,
             "panel_ways": 6,

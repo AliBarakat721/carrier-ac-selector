@@ -1,0 +1,24 @@
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index f2fa9bb..5f6c365 100644
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -81,6 +81,7 @@ jobs:
+           $files = @(
+             "main.py", "core.py", "ocr_engine.py", "electrical_engine.py",
+             "roi_tab.py", "updater.py", "version.py", "apply_update.ps1",
++            "logging_setup.py", "room_review_dialog.py", "units.py",
+             "Start_Carrier.bat", "setup.ps1", "run.ps1", "test.ps1",
+             "requirements.txt", "requirements-dev.txt", "README.md"
+           )
+@@ -108,6 +109,11 @@ jobs:
+               }
+             }
+           }
++          # ui/cad_workspace.py loads toolbar glyphs from icons/*.svg at runtime.
++          # They are assets, not Python modules, so they need their own copy step.
++          if (Test-Path -LiteralPath "icons" -PathType Container) {
++            Copy-Item -LiteralPath "icons" -Destination (Join-Path $stage "icons") -Recurse
++          }
+           $archive = Join-Path $PWD "CarrierACSelector-Windows.zip"
+           Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $archive -CompressionLevel Optimal
+           $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()

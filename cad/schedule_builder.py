@@ -87,6 +87,25 @@ def validate_schedule_data(
     return sorted(set(warnings))
 
 
+_ENTITY_WARNING_PREFIXES = (
+    "RELATIONSHIP_UNKNOWN_ENTITY:",
+    "RELATIONSHIP_SYSTEM_CONFLICT:",
+)
+
+
+def _warning_entity_ids(warnings: Iterable[str]) -> set[str]:
+    """Extract the ENTITY_ID carried by entity-scoped relationship warnings."""
+
+    entities: set[str] = set()
+    for warning in warnings:
+        for prefix in _ENTITY_WARNING_PREFIXES:
+            if warning.startswith(prefix):
+                entity_id = warning[len(prefix):].strip()
+                if entity_id:
+                    entities.add(entity_id)
+    return entities
+
+
 def resolve_system_relationships(
     relationships: Iterable[Mapping[str, object]] | pd.DataFrame,
 ) -> dict[str, dict[str, list[str]]]:
@@ -121,8 +140,17 @@ def build_equipment_schedule(
     indoor_equipment: Iterable[Mapping[str, object]] | pd.DataFrame,
     outdoor_equipment: Iterable[Mapping[str, object]] | pd.DataFrame,
     relationships: Iterable[Mapping[str, object]] | pd.DataFrame,
+    *,
+    warnings_out: list[str] | None = None,
 ) -> pd.DataFrame:
-    """Build one row per indoor unit and preserve many-to-many relationships."""
+    """Build one row per indoor unit and preserve many-to-many relationships.
+
+    Relationship/data problems detected by :func:`validate_schedule_data` are
+    non-fatal: the affected entities are marked ``NEEDS_REVIEW`` in
+    ``RELATIONSHIP_STATUS``, and the warning codes are appended to
+    ``warnings_out`` when a list is supplied so callers can surface them in the
+    UI or an export instead of silently losing them.
+    """
 
     indoor = _dedupe_exact_records(_records(indoor_equipment))
     outdoor = _dedupe_exact_records(_records(outdoor_equipment))
@@ -138,10 +166,13 @@ def build_equipment_schedule(
                 "ROLE": "INDOOR" if row in indoor else "OUTDOOR",
             })
     warnings = validate_schedule_data(indoor, outdoor, links)
+    if warnings_out is not None:
+        warnings_out.extend(warnings)
     resolved = resolve_system_relationships(links)
     indoor_ids = {str(row.get("ENTITY_ID", "")).strip() for row in indoor}
     outdoor_ids = {str(row.get("ENTITY_ID", "")).strip() for row in outdoor}
-    warning_entities: set[str] = set()
+    # Seed the review set from the validator so the two code paths cannot drift.
+    warning_entities: set[str] = _warning_entity_ids(warnings)
     memberships: dict[str, set[str]] = defaultdict(set)
     for link in links:
         entity_id = str(link.get("ENTITY_ID", "")).strip()

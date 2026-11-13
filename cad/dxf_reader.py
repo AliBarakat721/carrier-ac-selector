@@ -230,18 +230,27 @@ def _entity_data(entity: DXFGraphic) -> dict[str, Any]:
     if kind == "LINE":
         return {"start": _point(entity.dxf.start), "end": _point(entity.dxf.end)}
     if kind == "SOLID":
-        # A 2D SOLID is a filled triangular or quadrilateral boundary.  Use
-        # WCS vertices so SOLIDs expanded from INSERT blocks retain the same
-        # transform semantics as the other CAD geometry.
-        points = [_point(vertex) for vertex in entity.wcs_vertices()]
-        # ezdxf exposes SOLID vertices in DXF storage order v0, v1, v3, v2.
-        # Restore perimeter order before constructing a Shapely polygon.
+        # A 2D SOLID is a filled triangular or quadrilateral boundary. Use WCS
+        # vertices so SOLIDs expanded from INSERT blocks retain transforms.
+        # ezdxf versions differ in whether the final two vertices are already
+        # restored to perimeter order; only repair the unambiguously crossed
+        # zero-area ordering.
+        vertices = list(entity.wcs_vertices(close=False))
+        points = [(float(vertex.x), float(vertex.y)) for vertex in vertices]
         if len(points) == 4:
             if points[2] == points[3]:
                 points = points[:3]
-            else:
+            elif abs(sum(
+                points[index][0] * points[(index + 1) % 4][1]
+                - points[(index + 1) % 4][0] * points[index][1]
+                for index in range(4)
+            )) <= 1e-12:
                 points = [points[0], points[1], points[3], points[2]]
-        return {"points": points, "closed": len(points) >= 3}
+        return {
+            "points": points,
+            "z_values": [float(vertex.z) for vertex in vertices],
+            "closed": len(points) >= 3,
+        }
     if kind == "LWPOLYLINE":
         points = list(entity.get_points("xyseb"))
         return {
@@ -266,16 +275,6 @@ def _entity_data(entity: DXFGraphic) -> dict[str, Any]:
         return {
             "center": _point(entity.dxf.center),
             "radius": float(entity.dxf.radius),
-        }
-    if kind == "SOLID":
-        # SOLID stores its last two OCS vertices in reverse order at the DXF
-        # level.  ezdxf's wcs_vertices() returns the expected polygon order
-        # and also applies the entity's OCS extrusion transform.
-        vertices = entity.wcs_vertices(close=False)
-        return {
-            "points": [(float(vertex.x), float(vertex.y)) for vertex in vertices],
-            "z_values": [float(vertex.z) for vertex in vertices],
-            "closed": True,
         }
     if kind == "HATCH":
         return _hatch_data(entity)

@@ -52,6 +52,15 @@ class RoomSpace:
     #: Layers that contributed boundary segments, most frequent first.  Only
     #: populated for ``wall_lines`` rooms, which have no single source entity.
     boundary_layers: tuple[str, ...] = ()
+    #: All geometry sources fused into this candidate, in first-seen order.
+    sources: tuple[str, ...] = ()
+    #: Explainable score used by the review UI; it is not an engineering load.
+    evidence_score: float = 0.0
+    confidence: str = "LOW"
+
+    def __post_init__(self) -> None:
+        if not self.sources:
+            self.sources = (self.source,)
 
     @property
     def effective_layer(self) -> str | None:
@@ -614,28 +623,140 @@ def _iou(left: Polygon, right: Polygon) -> float:
     return left.intersection(right).area / union_area if union_area else 0.0
 
 
-def _deduplicate_spaces(rooms: list[RoomSpace], threshold: float = 0.98) -> list[RoomSpace]:
+def _non_room_layer(layer: str | None) -> bool:
+    if not layer:
+        return False
+    name = layer.casefold().replace("_", "-")
+    return any(token in name for token in ("furn", "door", "window", "dim", "text", "column"))
+
+
+def _fusion_match(
+    left: RoomSpace,
+    right: RoomSpace,
+    *,
+    iou_threshold: float,
+    containment_threshold: float,
+    tolerance: float,
+) -> bool:
+    if not left.polygon.is_valid or not right.polygon.is_valid:
+        return False
+    iou = _iou(left.polygon, right.polygon)
+    if iou >= iou_threshold:
+        return True
+    intersection = left.polygon.intersection(right.polygon).area
+    if intersection <= 0:
+        # Proximity alone is not evidence: adjacent rooms and a doorway can
+        # have nearly coincident boundaries but must remain separate spaces.
+        return False
+    coverage = max(
+        intersection / left.polygon.area,
+        intersection / right.polygon.area,
+    )
+    if coverage < containment_threshold:
+        wall_fill_pair = (
+            "wall_lines" in left.sources or "wall_lines" in right.sources
+        ) and (
+            "hatch_polygon" in left.sources
+            or "hatch_polygon" in right.sources
+            or "solid_polygon" in left.sources
+            or "solid_polygon" in right.sources
+        )
+        if not wall_fill_pair or coverage < 0.60:
+            return False
+    if _non_room_layer(left.effective_layer) or _non_room_layer(right.effective_layer):
+        return False
+    same_layer = bool(left.effective_layer and right.effective_layer) and (
+        left.effective_layer.casefold() == right.effective_layer.casefold()
+    )
+    same_label = bool(left.label and right.label) and left.label.casefold() == right.label.casefold()
+    source_pair = {left.source, right.source} <= {"hatch_polygon", "solid_polygon"}
+    return same_layer or same_label or source_pair or "wall_lines" in left.sources or "wall_lines" in right.sources
+
+
+def _evidence_for(room: RoomSpace) -> tuple[float, str]:
+    score = 0.35 if room.polygon.is_valid else 0.0
+    score += min(0.35, 0.18 * len(room.sources))
+    if room.label:
+        score += 0.15
+    if room.effective_layer and not _non_room_layer(room.effective_layer):
+        score += 0.15
+    score = min(1.0, round(score, 3))
+    confidence = "HIGH" if score >= 0.80 else "MEDIUM" if score >= 0.55 else "LOW"
+    return score, confidence
+
+
+def _merge_space_metadata(target: RoomSpace, other: RoomSpace) -> RoomSpace:
+    target.sources = tuple(dict.fromkeys(target.sources + other.sources))
+    target.boundary_handles = tuple(dict.fromkeys(target.boundary_handles + other.boundary_handles))
+    target.boundary_layers = tuple(dict.fromkeys(target.boundary_layers + other.boundary_layers))
+    if target.label is None:
+        target.label = other.label
+    target.evidence_score, target.confidence = _evidence_for(target)
+    return target
+
+
+def _canonical_space(left: RoomSpace, right: RoomSpace) -> RoomSpace:
+    # When one boundary contains another, prefer the smaller usable footprint
+    # (usually the interior hatch) for engineering area.  For near-identical
+    # duplicates retain first-seen order to preserve existing SOLID/HATCH API.
+    if left.polygon.area > right.polygon.area * 1.03:
+        return right
+    if right.polygon.area > left.polygon.area * 1.03:
+        return left
+    return left
+
+
+def fuse_space_candidates(
+    candidates: list[RoomSpace],
+    *,
+    iou_threshold: float = 0.90,
+    containment_threshold: float = 0.85,
+    tolerance: float = 0.05,
+) -> list[RoomSpace]:
+    """Fuse duplicate or nested room evidence without merging neighbors.
+
+    Full or near-full overlap is treated as duplicate evidence.  Containment
+    is accepted only for compatible layers/sources (or a wall boundary paired
+    with a fill), which prevents a small furniture SOLID from becoming a room
+    merely because it lies inside a larger room.
+    """
+    if not 0 < iou_threshold <= 1:
+        raise ValueError("IoU threshold must be in (0, 1]")
+    if not 0 < containment_threshold <= 1:
+        raise ValueError("Containment threshold must be in (0, 1]")
+    if tolerance < 0:
+        raise ValueError("Fusion tolerance cannot be negative")
     result: list[RoomSpace] = []
-    for candidate in rooms:
-        if not candidate.polygon.is_valid:
-            result.append(candidate)
-            continue
-        duplicate = next(
-            (item for item in result if item.polygon.is_valid and _iou(item.polygon, candidate.polygon) >= threshold),
+    for candidate in candidates:
+        score, confidence = _evidence_for(candidate)
+        candidate.evidence_score, candidate.confidence = score, confidence
+        match = next(
+            (
+                item
+                for item in result
+                if _fusion_match(
+                    item,
+                    candidate,
+                    iou_threshold=iou_threshold,
+                    containment_threshold=containment_threshold,
+                    tolerance=tolerance,
+                )
+            ),
             None,
         )
-        if duplicate is None:
+        if match is None:
             result.append(candidate)
-        elif duplicate.source != "closed_polyline" and candidate.source == "closed_polyline":
-            candidate.boundary_handles = tuple(
-                dict.fromkeys(duplicate.boundary_handles + candidate.boundary_handles)
-            )
-            result[result.index(duplicate)] = candidate
-        else:
-            duplicate.boundary_handles = tuple(
-                dict.fromkeys(duplicate.boundary_handles + candidate.boundary_handles)
-            )
+            continue
+        canonical = _canonical_space(match, candidate)
+        other = candidate if canonical is match else match
+        _merge_space_metadata(canonical, other)
+        result[result.index(match)] = canonical
     return result
+
+
+def _deduplicate_spaces(rooms: list[RoomSpace], threshold: float = 0.98) -> list[RoomSpace]:
+    """Backward-compatible wrapper for callers that used the old helper."""
+    return fuse_space_candidates(rooms, iou_threshold=threshold, containment_threshold=1.0)
 
 
 def detect_spaces(
@@ -695,7 +816,11 @@ def detect_spaces(
         rooms.extend(line_rooms)
         if diagnostics is not None:
             diagnostics.extend(snap_diagnostics)
-    rooms = _deduplicate_spaces(rooms)
+    # Labels are useful evidence when two compatible boundaries have different
+    # layers; assign them once before fusion and once more to the canonical
+    # polygons after fusion.
+    _assign_room_labels(rooms, document, normalized_label_layers, label_tolerance)
+    rooms = fuse_space_candidates(rooms)
     _assign_room_labels(rooms, document, normalized_label_layers, label_tolerance)
     for room in rooms:
         room.room_id = _stable_room_id(room.polygon)
@@ -765,7 +890,10 @@ class RoomDetectionReport:
                 "layer": room.layer or "",
                 "layer_class": room.layer_class,
                 "source": room.source,
+                "sources": room.sources,
                 "area_m2": round(room.area, 3),
+                "evidence_score": room.evidence_score,
+                "confidence": room.confidence,
                 "status": room.candidate_status,
                 "reasons": "; ".join(room.candidate_reasons),
             }

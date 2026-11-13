@@ -2,7 +2,13 @@
 
 from .dxf_reader import CadDocument, CadEntity, read_dxf
 from .importer import DwgImportError, read_cad_file
-from .space_detector import RoomDetectionReport, RoomSpace, detect_spaces, detect_spaces_with_review
+from .space_detector import (
+    RoomDetectionReport,
+    RoomSpace,
+    detect_spaces,
+    detect_spaces_with_review,
+    fuse_space_candidates,
+)
 from .layer_analyzer import (
     CandidateStatus,
     ClassificationConfidence,
@@ -74,6 +80,7 @@ __all__ = [
     "RoomDetectionReport",
     "detect_spaces",
     "detect_spaces_with_review",
+    "fuse_space_candidates",
     "RoomReviewSession",
     "RoomReviewRow",
     "ReviewAction",

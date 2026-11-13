@@ -6,7 +6,12 @@ import pytest
 
 import cad.space_detector as space_detector
 from cad.dxf_reader import read_dxf
-from cad.space_detector import _snap_line_endpoints, detect_spaces, detect_spaces_with_review
+from cad.space_detector import (
+    _snap_line_endpoints,
+    detect_spaces,
+    detect_spaces_with_review,
+    fuse_space_candidates,
+)
 
 
 def make_sample_dxf(path: Path) -> None:
@@ -204,6 +209,48 @@ def test_matching_hatch_and_solid_are_deduplicated_into_one_space(tmp_path):
     assert rooms[0].source == "solid_polygon"
     assert rooms[0].area == pytest.approx(20.0)
     assert len(rooms[0].boundary_handles) == 2
+    assert set(rooms[0].sources) == {"solid_polygon", "hatch_polygon"}
+    assert rooms[0].confidence in {"MEDIUM", "HIGH"}
+
+
+def test_wall_boundary_and_inner_hatch_fuse_to_inner_engineering_area(tmp_path):
+    source = tmp_path / "wall-and-inner-hatch.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    modelspace = drawing.modelspace()
+    for start, end in [
+        ((0, 0), (6, 0)),
+        ((6, 0), (6, 5)),
+        ((6, 5), (0, 5)),
+        ((0, 5), (0, 0)),
+    ]:
+        modelspace.add_line(start, end, dxfattribs={"layer": "WALLS"})
+    hatch = modelspace.add_hatch(dxfattribs={"layer": "ROOMS"})
+    hatch.set_solid_fill()
+    hatch.paths.add_polyline_path([(0.5, 0.5), (5.5, 0.5), (5.5, 4.5), (0.5, 4.5)], is_closed=True)
+    drawing.saveas(source)
+
+    rooms = detect_spaces(source, wall_layers={"WALLS"})
+
+    assert len(rooms) == 1
+    assert rooms[0].source == "hatch_polygon"
+    assert set(rooms[0].sources) == {"wall_lines", "hatch_polygon"}
+    assert rooms[0].area == pytest.approx(20.0)
+
+
+def test_adjacent_closed_spaces_are_not_fused_by_proximity():
+    left = space_detector.RoomSpace(
+        room_id="LEFT", polygon=space_detector.Polygon([(0, 0), (4, 0), (4, 4), (0, 4)]),
+        area=16.0, perimeter=16.0, source="hatch_polygon", layer="ROOMS",
+    )
+    right = space_detector.RoomSpace(
+        room_id="RIGHT", polygon=space_detector.Polygon([(4, 0), (8, 0), (8, 4), (4, 4)]),
+        area=16.0, perimeter=16.0, source="solid_polygon", layer="ROOMS",
+    )
+
+    fused = fuse_space_candidates([left, right])
+
+    assert len(fused) == 2
 
 
 def test_block_room_geometry_is_transformed_and_inherits_insert_layer(tmp_path):

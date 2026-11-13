@@ -3,8 +3,8 @@ from pathlib import Path
 
 import ezdxf
 import pytest
-
 from cad import importer
+from cad.room_review import RoomReviewSession
 
 
 def test_dxf_is_read_directly_without_oda(tmp_path, monkeypatch):
@@ -82,14 +82,30 @@ def test_dwg_is_converted_to_temporary_dxf_and_read(tmp_path, monkeypatch):
     def fake_convert(source_path, destination_path, **kwargs):
         converted_paths.append(Path(destination_path))
         drawing = ezdxf.new("R2018")
+        drawing.header["$INSUNITS"] = 6
+        drawing.layers.new("A-WALL")
+        drawing.layers.new("A-ANNO-TEXT")
+        modelspace = drawing.modelspace()
+        modelspace.add_lwpolyline(
+            [(0, 0), (5, 0), (5, 4), (0, 4)],
+            close=True,
+            dxfattribs={"layer": "A-WALL"},
+        )
+        modelspace.add_text(
+            "Office", height=0.2, dxfattribs={"layer": "A-ANNO-TEXT"}
+        ).set_placement((2.5, 2.0))
         drawing.saveas(destination_path)
 
     monkeypatch.setattr(importer.odafc, "is_installed", lambda: True)
     monkeypatch.setattr(importer.odafc, "convert", fake_convert)
 
-    document = importer.read_cad_file(source)
+    session = RoomReviewSession.from_path(source)
+    document = session.document
 
     assert document.path == source
-    assert document.entity_count == 0
+    assert document.entities_of_type("LWPOLYLINE")
+    assert document.entities_of_type("TEXT")[0].data["height"] == pytest.approx(0.2)
+    assert len(session.rooms) == 1
+    assert session.rooms[0].label == "Office"
     assert len(converted_paths) == 1
     assert not converted_paths[0].exists()

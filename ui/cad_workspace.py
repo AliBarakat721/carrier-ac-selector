@@ -5,7 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Iterable
 from PySide6.QtCore import Qt, QPointF, QRectF, QSize, Signal
-from PySide6.QtGui import QColor, QBrush, QPen, QPainter, QPainterPath, QIcon, QPixmap
+from PySide6.QtGui import QColor, QBrush, QPen, QPainter, QPainterPath, QIcon, QPixmap, QFont
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsPathItem,
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from shapely.geometry import Point
 from cad.dxf_reader import CadEntity
 
 
@@ -213,10 +214,25 @@ class CadViewport(QGraphicsView):
         self.clear_document()
         self._rooms = list(rooms)
         self._render_entities(document.entities if document else [])
-        self._render_rooms(self._rooms)
+        geometry_rect = self.scene.itemsBoundingRect()
+        if geometry_rect.isValid() and geometry_rect.width() > 0 and geometry_rect.height() > 0:
+            annotation_height = max(min(geometry_rect.width(), geometry_rect.height()) * 0.012, 0.01)
+        else:
+            annotation_height = 1.0
+        text_entities = [
+            entity for entity in (document.entities if document else [])
+            if entity.entity_type.upper() in {"TEXT", "MTEXT", "ATTRIB"}
+        ]
+        self._render_text_entities(text_entities, annotation_height)
+        self._render_rooms(self._rooms, annotation_height)
         rect = self.scene.itemsBoundingRect()
-        if rect.isValid() and rect.width() > 1 and rect.height() > 1:
-            self.fitInView(rect.adjusted(-80, -80, 80, 80), Qt.KeepAspectRatio)
+        self._fit_scene_rect(rect)
+
+    def _fit_scene_rect(self, rect: QRectF):
+        if not rect.isValid() or max(rect.width(), rect.height()) <= 0:
+            return
+        padding = max(rect.width(), rect.height()) * 0.035
+        self.fitInView(rect.adjusted(-padding, -padding, padding, padding), Qt.KeepAspectRatio)
 
     def _pen_brush(self, layer: str):
         _name, _keys, stroke, fill, width = layer_style(layer)
@@ -270,16 +286,31 @@ class CadViewport(QGraphicsView):
                     path.arcTo(rect, start_angle, sweep)
                     item = self.scene.addPath(path, pen, QBrush(Qt.NoBrush))
                     self._register(item, layer, entity)
-            elif kind in {"TEXT", "MTEXT", "ATTRIB"}:
-                insert = data.get("insert")
-                text = str(data.get("text", "")).strip()
-                if insert and text:
-                    item = self.scene.addSimpleText(text)
-                    item.setBrush(QBrush(PALETTE["text"]))
-                    item.setPos(float(insert[0]), -float(insert[1]))
-                    self._register(item, layer, entity)
 
-    def _render_rooms(self, rooms):
+    def _render_text_entities(self, entities, default_height: float):
+        self._rendered_text_labels = []
+        for entity in entities:
+            data = entity.data
+            insert = data.get("insert")
+            text = str(data.get("text", "")).strip()
+            if not insert or not text:
+                continue
+            item = self.scene.addSimpleText(text)
+            item.setBrush(QBrush(PALETTE["text"]))
+            font = QFont(item.font())
+            font.setPointSizeF(10.0)
+            item.setFont(font)
+            natural_height = max(item.boundingRect().height(), 1e-9)
+            height = float(data.get("height") or 0.0)
+            if not math.isfinite(height) or height <= 0:
+                height = default_height
+            item.setScale(height / natural_height)
+            item.setRotation(-float(data.get("rotation", 0.0) or 0.0))
+            item.setPos(float(insert[0]), -float(insert[1]))
+            self._register(item, entity.layer, entity)
+            self._rendered_text_labels.append((text.strip().casefold(), (float(insert[0]), float(insert[1]))))
+
+    def _render_rooms(self, rooms, annotation_height: float = 1.0):
         pen = QPen(PALETTE["room"])
         pen.setWidthF(1.6)
         pen.setCosmetic(True)
@@ -294,13 +325,25 @@ class CadViewport(QGraphicsView):
             self.scene.addItem(item)
             self._room_items[room.room_id] = item
             point = room.polygon.representative_point()
-            label = QGraphicsSimpleTextItem(room.label or room.room_id)
-            label.setBrush(QBrush(PALETTE["text"]))
-            label.setPos(float(point.x), -float(point.y))
-            label.setScale(1.1)
-            label.setData(0, room)
-            label.setZValue(10)
-            self.scene.addItem(label)
+            room_label = (room.label or room.room_id).strip()
+            already_rendered = any(
+                text == room_label.casefold() and room.polygon.covers(
+                    Point(position)
+                )
+                for text, position in getattr(self, "_rendered_text_labels", [])
+            )
+            if not already_rendered:
+                label = QGraphicsSimpleTextItem(room_label)
+                label.setBrush(QBrush(PALETTE["text"]))
+                font = QFont(label.font())
+                font.setPointSizeF(10.0)
+                label.setFont(font)
+                natural_height = max(label.boundingRect().height(), 1e-9)
+                label.setScale(annotation_height / natural_height)
+                label.setPos(float(point.x), -float(point.y))
+                label.setData(0, room)
+                label.setZValue(10)
+                self.scene.addItem(label)
 
     def _clear_preview(self):
         if self._preview_item is not None:
@@ -405,8 +448,7 @@ class CadViewport(QGraphicsView):
 
     def fit_all(self):
         rect = self.scene.itemsBoundingRect()
-        if rect.isValid() and rect.width() > 1 and rect.height() > 1:
-            self.fitInView(rect.adjusted(-80, -80, 80, 80), Qt.KeepAspectRatio)
+        self._fit_scene_rect(rect)
 
     def wheelEvent(self, event):
         factor = 1.18 if event.angleDelta().y() > 0 else 1 / 1.18

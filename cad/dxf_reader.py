@@ -194,9 +194,16 @@ def _entity_data(entity: DXFGraphic) -> dict[str, Any]:
             "closed": bool(entity.dxf.get("flags", 0) & 1),
         }
     if kind in {"TEXT", "MTEXT", "ATTRIB"}:
+        height = (
+            entity.dxf.get("char_height", 0.0)
+            if kind == "MTEXT"
+            else entity.dxf.get("height", 0.0)
+        )
         return {
             "text": entity.plain_text() if kind == "MTEXT" else str(entity.dxf.text),
             "insert": _point(entity.dxf.insert),
+            "height": float(height or 0.0),
+            "rotation": float(entity.dxf.get("rotation", 0.0) or 0.0),
         }
     if kind == "INSERT":
         return {"block_name": str(entity.dxf.name), "insert": _point(entity.dxf.insert)}

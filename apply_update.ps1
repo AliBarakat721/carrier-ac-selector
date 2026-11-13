@@ -41,13 +41,32 @@ function Test-UpdateArchive([string]$ZipPath) {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $allowedRoot = @(
         "main.py", "core.py", "ocr_engine.py", "electrical_engine.py",
-        "roi_tab.py", "updater.py", "version.py", "apply_update.ps1",
+        "roi_tab.py", "room_review_dialog.py", "updater.py", "version.py",
+        "apply_update.ps1",
         "Start_Carrier.bat", "setup.ps1", "run.ps1", "test.ps1",
         "requirements.txt", "requirements-dev.txt", "README.md"
     )
     $allowedData = @("Carrier_AC_Database.xlsx", "Carrier_AC_Database.csv")
-    $allowedPackageDirs = @("cad", "engineering", "equipment", "hap", "reports", "ui")
+    # Package directories are allow-listed file-by-file. core.py imports the Phase 1
+    # packages (engineering, equipment, hap, reports, ui), so all of them are required.
+    $allowedPackages = @{
+        "cad" = @(
+            "__init__.py", "block_manager.py", "dxf_exporter.py", "dxf_reader.py",
+            "importer.py", "layer_analyzer.py", "layer_manager.py",
+            "room_matching.py", "room_review.py", "schedule_builder.py",
+            "space_detector.py", "tag_config.py", "workflow.py"
+        )
+        "engineering" = @("__init__.py", "units.py")
+        "equipment" = @("__init__.py", "best_pick.py", "catalog_reader.py", "indoor_selector.py")
+        "hap" = @("__init__.py", "parser.py")
+        "reports" = @("__init__.py", "electrical_report.py", "excel_export.py", "export_frames.py", "file_io.py")
+        "ui" = @("__init__.py", "cad_workspace.py", "layout.py", "selection_workspace.py")
+    }
     $required = @("main.py", "core.py", "requirements.txt", "updater.py", "version.py", "apply_update.ps1")
+    $required += "room_review_dialog.py"
+    foreach ($package in $allowedPackages.Keys) {
+        foreach ($name in $allowedPackages[$package]) { $required += "$package/$name" }
+    }
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     $found = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     $total = [int64]0
@@ -76,16 +95,18 @@ function Test-UpdateArchive([string]$ZipPath) {
                 throw "Links and special files are not allowed: $raw"
             }
             if ($isDirectory) {
-                if ($clean -eq 'data' -or $allowedPackageDirs -contains $parts[0]) { continue }
+                if ($clean -eq 'data') { continue }
+                if ($allowedPackages.ContainsKey($parts[0]) -and $parts -notcontains '__pycache__') { continue }
                 throw "Unexpected directory in update archive: $raw"
             }
-
             if ($parts.Count -eq 1 -and $allowedRoot -contains $parts[0]) {
                 [void]$found.Add($parts[0])
             } elseif ($parts.Count -eq 2 -and $parts[0] -eq 'data' -and $allowedData -contains $parts[1]) {
                 # The user database is preserved by the installer below.
-            } elseif ($parts.Count -ge 2 -and $allowedPackageDirs -contains $parts[0] -and $parts[-1].EndsWith('.py') -and $parts -notcontains '__pycache__') {
-                # Only Python source files in explicitly allowed application packages are accepted.
+            } elseif ($parts.Count -eq 2 -and $allowedPackages.ContainsKey($parts[0]) -and $allowedPackages[$parts[0]] -contains $parts[1]) {
+                [void]$found.Add(($parts -join '/'))
+            } elseif ($parts.Count -gt 2 -and $allowedPackages.ContainsKey($parts[0]) -and $parts[-1].EndsWith('.py') -and $parts -notcontains '__pycache__') {
+                continue
             } else {
                 throw "Unexpected file in update archive: $raw"
             }

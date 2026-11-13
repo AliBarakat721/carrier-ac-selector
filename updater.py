@@ -29,18 +29,31 @@ MAX_COMPRESSION_RATIO = 250
 
 ALLOWED_ROOT_FILES = {
     "main.py", "core.py", "ocr_engine.py", "electrical_engine.py",
-    "roi_tab.py", "updater.py", "version.py", "apply_update.ps1",
+    "roi_tab.py", "room_review_dialog.py", "updater.py", "version.py",
+    "apply_update.ps1",
     "Start_Carrier.bat", "setup.ps1", "run.ps1", "test.ps1",
     "requirements.txt", "requirements-dev.txt", "README.md",
 }
 ALLOWED_DATA_FILES = {"Carrier_AC_Database.xlsx", "Carrier_AC_Database.csv"}
-ALLOWED_PACKAGE_DIRS = {"cad", "engineering", "equipment", "hap", "reports", "ui"}
-# Backward-compatible list used by existing updater fixtures. New package
-# trees are validated through ALLOWED_PACKAGE_DIRS below.
 ALLOWED_CAD_FILES = {
-    "block_manager.py", "dxf_exporter.py", "dxf_reader.py",
-    "importer.py", "layer_manager.py", "schedule_builder.py",
-    "space_detector.py", "tag_config.py", "workflow.py",
+    "__init__.py", "block_manager.py", "dxf_exporter.py", "dxf_reader.py",
+    "importer.py", "layer_analyzer.py", "layer_manager.py", "room_matching.py",
+    "room_review.py", "schedule_builder.py", "space_detector.py",
+    "tag_config.py", "workflow.py",
+}
+# Phase 1 architecture packages. Each is allow-listed file-by-file (like cad/),
+# because ``core.py`` imports them: an update missing any of them would crash.
+ALLOWED_PACKAGE_FILES = {
+    "cad": ALLOWED_CAD_FILES,
+    "engineering": {"__init__.py", "units.py"},
+    "equipment": {"__init__.py", "best_pick.py", "catalog_reader.py",
+                  "indoor_selector.py"},
+    "hap": {"__init__.py", "parser.py"},
+    "reports": {"__init__.py", "electrical_report.py", "excel_export.py",
+                "export_frames.py", "file_io.py"},
+    "ui": {
+        "__init__.py", "cad_workspace.py", "layout.py", "selection_workspace.py",
+    },
 }
 SEMVER_PATTERN = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\Z")
 
@@ -206,7 +219,9 @@ def _validate_archive(archive_path: Path) -> None:
     seen: set[str] = set()
     total_size = 0
     required = {"main.py", "core.py", "requirements.txt", "updater.py",
-                "version.py", "apply_update.ps1"}
+                "room_review_dialog.py", "version.py", "apply_update.ps1"}
+    for package, names in ALLOWED_PACKAGE_FILES.items():
+        required.update(f"{package}/{name}" for name in names)
     found: set[str] = set()
 
     try:
@@ -252,16 +267,26 @@ def _validate_archive(archive_path: Path) -> None:
                 if is_dir:
                     if parts == ("data",):
                         continue
-                    if parts[0].casefold() in ALLOWED_PACKAGE_DIRS:
+                    if (
+                        parts[0] in ALLOWED_PACKAGE_FILES
+                        and all(part.casefold() != "__pycache__" for part in parts)
+                    ):
                         continue
-                    raise UpdateError(f"Unexpected directory in update package: {raw_name}")
+                    else:
+                        raise UpdateError(f"Unexpected directory in update package: {raw_name}")
                 if len(parts) == 1 and parts[0] in ALLOWED_ROOT_FILES:
                     found.add(parts[0])
                 elif len(parts) == 2 and parts[0] == "data" and parts[1] in ALLOWED_DATA_FILES:
                     pass
-                elif (len(parts) >= 2 and parts[0].casefold() in ALLOWED_PACKAGE_DIRS
-                      and parts[-1].casefold().endswith(".py")
-                      and all(part.casefold() != "__pycache__" for part in parts)):
+                elif (len(parts) == 2 and parts[0] in ALLOWED_PACKAGE_FILES
+                      and parts[1] in ALLOWED_PACKAGE_FILES[parts[0]]):
+                    found.add("/".join(parts))
+                elif (
+                    len(parts) > 2
+                    and parts[0] in ALLOWED_PACKAGE_FILES
+                    and parts[-1].casefold().endswith(".py")
+                    and all(part.casefold() != "__pycache__" for part in parts)
+                ):
                     pass
                 else:
                     raise UpdateError(f"Unexpected file in update package: {raw_name}")

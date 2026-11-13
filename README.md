@@ -205,6 +205,7 @@ To run tests manually:
 . .venv/bin/activate
 pytest -q
 python -m py_compile core.py main.py electrical_engine.py ocr_engine.py roi_tab.py updater.py version.py
+python -m compileall -q cad engineering equipment hap reports ui
 ```
 
 The current regression suite covers database-independent HAP parsing, including multi-system `Sizing Summary` headers, the legacy information layout, mixed layouts, and system names without digits.
@@ -212,7 +213,15 @@ The current regression suite covers database-independent HAP parsing, including 
 ## Project layout
 
 ```text
-core.py                       Pure logic: database loading, HAP parsing, selection
+core.py                       Backward-compatible facade re-exporting the logic packages below
+engineering/units.py          Unit constants and tolerant number parsing
+equipment/catalog_reader.py   Equipment catalog loading
+equipment/indoor_selector.py  Single / multi-unit / batch selection rules
+equipment/best_pick.py        "Best unit" picking over a results table
+hap/parser.py                 HAP report text parsing (single and multi-system)
+reports/                      Export helpers: file I/O, Excel styling, electrical sections, export frames
+ui/layout.py                  Qt-independent layout helpers
+cad/                          CAD import, room detection, blocks, DXF export, schedules
 ocr_engine.py                 OCR front-end: RTF/PDF text layer/Tesseract
 main.py                       PySide6 GUI and report export
 electrical_engine.py          Electrical load and cable-sizing calculations
@@ -220,6 +229,7 @@ roi_tab.py                    Inverter ROI calculations and export helpers
 data/Carrier_AC_Database.xlsx Carrier catalogue
 
 tests/test_core.py            Parser regression tests
+tests/test_architecture.py    Layering guards (no Qt in logic packages, facade compatibility)
 setup.sh                      Create the virtual environment and install dependencies
 run.sh                        Activate the environment and start the GUI
 test.sh                        Run tests and syntax checks

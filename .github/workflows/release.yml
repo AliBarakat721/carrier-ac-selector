@@ -52,7 +52,7 @@ jobs:
             $files = @(Get-ChildItem -Path $packageDirs -Filter *.py -File -Recurse |
               ForEach-Object { $_.FullName })
           }
-          python -m py_compile core.py main.py electrical_engine.py ocr_engine.py roi_tab.py updater.py version.py $files
+          python -m py_compile core.py main.py electrical_engine.py logging_setup.py ocr_engine.py room_review_dialog.py roi_tab.py units.py updater.py version.py $files
           if ($LASTEXITCODE -ne 0) { throw "Python compilation failed." }
           python -m pytest -q
           if ($LASTEXITCODE -ne 0) { throw "Tests failed; refusing to publish this release." }
@@ -81,6 +81,7 @@ jobs:
           $files = @(
             "main.py", "core.py", "ocr_engine.py", "electrical_engine.py",
             "roi_tab.py", "updater.py", "version.py", "apply_update.ps1",
+            "logging_setup.py", "room_review_dialog.py", "units.py",
             "Start_Carrier.bat", "setup.ps1", "run.ps1", "test.ps1",
             "requirements.txt", "requirements-dev.txt", "README.md"
           )
@@ -107,6 +108,23 @@ jobs:
                 Copy-Item -LiteralPath $sourceFile.FullName -Destination $destination
               }
             }
+          }
+          if (-not (Test-Path -LiteralPath "icons" -PathType Container)) {
+            throw "The application icons directory is missing."
+          }
+          Copy-Item -LiteralPath "icons" -Destination $stage -Recurse -Force
+          foreach ($icon in @("move_rotate.svg", "scale.svg")) {
+            if (-not (Test-Path -LiteralPath (Join-Path $stage "icons/$icon") -PathType Leaf)) {
+              throw "Required CAD toolbar icon is missing from release staging: $icon"
+            }
+          }
+          Push-Location $stage
+          try {
+            $smoke = 'from pathlib import Path; from PySide6.QtWidgets import QApplication; import main; from ui.cad_workspace import _icon; app = QApplication([]); assert not _icon(Path.cwd(), "move_rotate").isNull(); assert not _icon(Path.cwd(), "scale").isNull(); print("Staged application imports and CAD icons load.")'
+            python -c $smoke
+            if ($LASTEXITCODE -ne 0) { throw "Staged release import/icon smoke test failed." }
+          } finally {
+            Pop-Location
           }
           $archive = Join-Path $PWD "CarrierACSelector-Windows.zip"
           Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $archive -CompressionLevel Optimal

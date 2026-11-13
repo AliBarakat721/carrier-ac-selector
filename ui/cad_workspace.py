@@ -14,10 +14,12 @@ from PySide6.QtWidgets import (
     QGraphicsSimpleTextItem,
     QGraphicsView,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QTreeWidget,
     QTreeWidgetItem,
@@ -125,6 +127,7 @@ class CadViewport(QGraphicsView):
     entity_created = Signal(object)
     entity_deleted = Signal(object)
     entity_moved = Signal(object, object, object)
+    entity_transform_requested = Signal(object, str, float)
     action_undone = Signal()
     prompt_changed = Signal(str)
 
@@ -146,6 +149,7 @@ class CadViewport(QGraphicsView):
         self._move_entity = None
         self._preview_item = None
         self._cursor_world_point = None
+        self._transform_value = 0.0
         self._draw_grid()
 
     def set_mode(self, mode: str):
@@ -159,6 +163,8 @@ class CadViewport(QGraphicsView):
             "rectangle": "Draw rectangle · click opposite corners",
             "circle": "Draw circle · click center, then radius point",
             "move": "Move · click an entity, then its destination",
+            "rotate": "Rotate · click a CAD entity to apply the chosen angle",
+            "scale": "Scale · click a CAD entity to apply the chosen factor",
             "delete": "Delete · click an entity (rooms are protected)",
             "undo": "Undo last CAD edit",
         }
@@ -355,7 +361,7 @@ class CadViewport(QGraphicsView):
                 self.prompt_changed.emit(f"{self._mode.title()} added · select another tool")
             event.accept()
             return
-        if event.button() == Qt.LeftButton and self._mode in {"delete", "move"}:
+        if event.button() == Qt.LeftButton and self._mode in {"delete", "move", "rotate", "scale"}:
             item = self.itemAt(event.position().toPoint())
             entity = item.data(0) if item else None
             if entity is None or not hasattr(entity, "entity_type"):
@@ -366,6 +372,8 @@ class CadViewport(QGraphicsView):
             world_point = (float(point.x()), -float(point.y()))
             if self._mode == "delete":
                 self.entity_deleted.emit(entity)
+            elif self._mode in {"rotate", "scale"}:
+                self.entity_transform_requested.emit(entity, self._mode, self._transform_value)
             elif self._move_entity is None:
                 self._move_entity = (entity, world_point)
                 self.prompt_changed.emit("Entity selected · click its destination")
@@ -584,21 +592,24 @@ class CadWorkspace(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         title = QLabel("CAD WORKSPACE")
         title.setObjectName("workspace_title")
+        self.workspace_title = title
         row.addWidget(title)
+        self.status.setMinimumWidth(0)
+        self.status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         row.addWidget(self.status, 1)
-        fit_button = QPushButton("Fit view")
-        fit_button.setIcon(_icon(self.project_root, "fit_to_page"))
-        fit_button.clicked.connect(self.viewport.fit_all)
-        row.addWidget(fit_button)
-        open_button = QPushButton("Import DWG / DXF")
-        open_button.setIcon(_icon(self.project_root, "fileopen"))
-        open_button.clicked.connect(self.request_open.emit)
-        row.addWidget(open_button)
-        export_button = QPushButton("Export HVAC DXF")
-        export_button.setIcon(_icon(self.project_root, "export"))
-        export_button.setObjectName("btn_success")
-        export_button.clicked.connect(self.request_export.emit)
-        row.addWidget(export_button)
+        self.fit_button = QPushButton("Fit view")
+        self.fit_button.setIcon(_icon(self.project_root, "fit_to_page"))
+        self.fit_button.clicked.connect(self.viewport.fit_all)
+        row.addWidget(self.fit_button)
+        self.open_button = QPushButton("Import DWG / DXF")
+        self.open_button.setIcon(_icon(self.project_root, "fileopen"))
+        self.open_button.clicked.connect(self.request_open.emit)
+        row.addWidget(self.open_button)
+        self.export_button = QPushButton("Export HVAC DXF")
+        self.export_button.setIcon(_icon(self.project_root, "export"))
+        self.export_button.setObjectName("btn_success")
+        self.export_button.clicked.connect(self.request_export.emit)
+        row.addWidget(self.export_button)
         toolbar_layout.addLayout(row)
         tool_row = QHBoxLayout()
         tool_row.setContentsMargins(0, 0, 0, 0)
@@ -610,11 +621,14 @@ class CadWorkspace(QWidget):
             ("rectangle", "Rectangle", "line_rectangle"),
             ("circle", "Circle", "circle_center_point"),
             ("move", "Move", "move_copy"),
+            ("rotate", "Rotate", "move_rotate"),
+            ("scale", "Scale", "scale"),
             ("delete", "Delete", "delete"),
             ("undo", "Undo", "back"),
             ("select", "Select", "cursor"),
         ):
             tool = QPushButton(label)
+            tool.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             tool.setCheckable(mode != "undo")
             if mode == "select":
                 tool.setChecked(True)
@@ -622,8 +636,13 @@ class CadWorkspace(QWidget):
             tool.setIconSize(QSize(16, 16))
             tool.setToolTip(label)
             if mode == "undo":
+                tool.setCheckable(False)
                 tool.clicked.connect(self._undo_edit)
+            elif mode in {"rotate", "scale"}:
+                tool.setCheckable(True)
+                tool.clicked.connect(lambda _checked=False, value=mode: self._request_transform(value))
             else:
+                tool.setCheckable(True)
                 tool.clicked.connect(lambda _checked=False, value=mode: self._activate_tool(value))
             self.tool_buttons[mode] = tool
             tool_row.addWidget(tool)
@@ -657,6 +676,7 @@ class CadWorkspace(QWidget):
         self.viewport.entity_created.connect(self._add_entity)
         self.viewport.entity_deleted.connect(self._delete_entity)
         self.viewport.entity_moved.connect(self._move_entity)
+        self.viewport.entity_transform_requested.connect(self._transform_entity)
         self.viewport.action_undone.connect(self._undo_edit)
         self.viewport.prompt_changed.connect(self.status.setText)
         self.browser.room_clicked.connect(self._select_room_by_id)
@@ -668,6 +688,67 @@ class CadWorkspace(QWidget):
         for name, button in self.tool_buttons.items():
             if name != "undo":
                 button.setChecked(name == mode)
+
+    def _request_transform(self, mode: str):
+        if mode == "rotate":
+            value, accepted = QInputDialog.getDouble(
+                self, "Rotate CAD entity", "Rotation angle (degrees, counter-clockwise):",
+                90.0, -36000.0, 36000.0, 1
+            )
+        else:
+            value, accepted = QInputDialog.getDouble(
+                self, "Scale CAD entity", "Scale factor (1.0 keeps original size):",
+                1.25, 0.01, 100.0, 2
+            )
+        if accepted:
+            self.viewport._transform_value = float(value)
+            self._activate_tool(mode)
+        else:
+            for name, button in self.tool_buttons.items():
+                if name != "undo":
+                    button.setChecked(name == self.viewport._mode)
+
+    def _transform_entity(self, entity, mode: str, value: float):
+        if self.document is None or entity not in self.document.entities:
+            self.status.setText("Only an entity in the current drawing can be transformed")
+            return
+        points = []
+        for key in ("start", "end", "center", "insert"):
+            point = entity.data.get(key)
+            if point is not None:
+                points.append((float(point[0]), float(point[1])))
+        points.extend((float(x), float(y)) for x, y in entity.data.get("points", []))
+        if not points:
+            self.status.setText("This entity type has no supported editable geometry")
+            return
+        pivot = (sum(point[0] for point in points) / len(points),
+                 sum(point[1] for point in points) / len(points))
+        data = dict(entity.data)
+        radians = math.radians(value) if mode == "rotate" else 0.0
+        cosine, sine = math.cos(radians), math.sin(radians)
+
+        def transform(point):
+            dx, dy = float(point[0]) - pivot[0], float(point[1]) - pivot[1]
+            if mode == "rotate":
+                return (pivot[0] + dx * cosine - dy * sine,
+                        pivot[1] + dx * sine + dy * cosine)
+            return (pivot[0] + dx * value, pivot[1] + dy * value)
+
+        for key in ("start", "end", "center", "insert"):
+            if data.get(key) is not None:
+                data[key] = transform(data[key])
+        if "points" in data:
+            data["points"] = [transform(point) for point in data["points"]]
+        if mode == "scale" and "radius" in data:
+            data["radius"] = float(data["radius"]) * value
+        if mode == "rotate" and entity.entity_type.upper() == "ARC":
+            data["start_angle"] = float(data.get("start_angle", 0.0)) + value
+            data["end_angle"] = float(data.get("end_angle", 360.0)) + value
+        self._remember_entities()
+        self.document.entities[self.document.entities.index(entity)] = replace(entity, data=data)
+        self._refresh_after_edit()
+        unit = "°" if mode == "rotate" else "×"
+        self.status.setText(f"Entity {mode}d by {value:g}{unit} · Undo restores it")
 
     def _remember_entities(self):
         if self.document is not None:
@@ -720,6 +801,22 @@ class CadWorkspace(QWidget):
         self.document.entities[:] = self._edit_history.pop()
         self._refresh_after_edit()
         self.status.setText("Last CAD edit undone")
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        width = event.size().width()
+        compact = width < 980
+        self.workspace_title.setVisible(width >= 700)
+        self.status.setVisible(width >= 700)
+        self.fit_button.setText("Fit" if compact else "Fit view")
+        self.open_button.setText("Import" if compact else "Import DWG / DXF")
+        self.export_button.setText("Export" if compact else "Export HVAC DXF")
+        for mode, button in self.tool_buttons.items():
+            button.setText("" if compact else {
+                "line": "Draw line", "rectangle": "Rectangle", "circle": "Circle",
+                "move": "Move", "rotate": "Rotate", "scale": "Scale",
+                "delete": "Delete", "undo": "Undo", "select": "Select",
+            }[mode])
 
     def set_project_data(self, document, rooms, assignments=None, selected_units=None):
         self.document = document

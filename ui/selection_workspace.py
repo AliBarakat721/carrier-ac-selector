@@ -6,6 +6,7 @@ import pandas as pd
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFrame,
     QGridLayout,
@@ -38,6 +39,10 @@ class SelectionWorkspace(QWidget):
         self.catalog = pd.DataFrame()
         self.selected_units: dict = {}
         self._visible_rows: list[int] = []
+        self.required_btu = 0.0
+        self.required_cfm = 0.0
+        self.derate_pct = 0.0
+        self._compact_filters = None
         self._build()
 
     def _build(self):
@@ -80,30 +85,52 @@ class SelectionWorkspace(QWidget):
         filter_layout.setContentsMargins(10, 8, 10, 8)
         filter_layout.setHorizontalSpacing(8)
         filter_layout.setVerticalSpacing(6)
-        filter_layout.addWidget(QLabel("Search"), 0, 0)
+        self.search_label = QLabel("Search")
+        filter_layout.addWidget(self.search_label, 0, 0)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Model, indoor unit, series, notes…")
         self.search.textChanged.connect(self.refresh_table)
         filter_layout.addWidget(self.search, 0, 1, 1, 3)
-        filter_layout.addWidget(QLabel("Category"), 1, 0)
+        self.category_label = QLabel("Category")
+        filter_layout.addWidget(self.category_label, 1, 0)
         self.category = QComboBox()
         self.category.currentTextChanged.connect(self._filter_changed)
         filter_layout.addWidget(self.category, 1, 1)
-        filter_layout.addWidget(QLabel("Series"), 1, 2)
+        self.series_label = QLabel("Series")
+        filter_layout.addWidget(self.series_label, 1, 2)
         self.series = QComboBox()
         self.series.currentTextChanged.connect(self._filter_changed)
         filter_layout.addWidget(self.series, 1, 3)
-        filter_layout.addWidget(QLabel("Type"), 1, 4)
+        self.type_label = QLabel("Type")
+        filter_layout.addWidget(self.type_label, 1, 4)
         self.unit_type = QComboBox()
         self.unit_type.currentTextChanged.connect(self._filter_changed)
         filter_layout.addWidget(self.unit_type, 1, 5)
-        filter_layout.addWidget(QLabel("Min capacity"), 1, 6)
+        self.capacity_label = QLabel("Min capacity")
+        filter_layout.addWidget(self.capacity_label, 1, 6)
         self.min_capacity = QSpinBox()
         self.min_capacity.setRange(0, 200000)
         self.min_capacity.setSingleStep(1000)
         self.min_capacity.setSuffix(" Btu/h")
         self.min_capacity.valueChanged.connect(self.refresh_table)
         filter_layout.addWidget(self.min_capacity, 1, 7)
+        self.auto_match = QCheckBox("Auto-match current HAP load")
+        self.auto_match.setChecked(True)
+        self.auto_match.setToolTip("Show only units that meet active cooling and airflow requirements")
+        self.auto_match.toggled.connect(self.refresh_table)
+        filter_layout.addWidget(self.auto_match, 2, 0, 1, 2)
+        self.match_summary = QLabel("Waiting for HAP load data")
+        self.match_summary.setObjectName("selection_match_summary")
+        self.match_summary.setStyleSheet(
+            "color: #1769aa; background: #edf5ff; border: 1px solid #d8e9fc; "
+            "border-radius: 6px; padding: 6px 9px; font-weight: 600;"
+        )
+        filter_layout.addWidget(self.match_summary, 2, 2, 1, 6)
+        self._filter_layout = filter_layout
+        self._filter_controls = [
+            (self.category_label, self.category), (self.series_label, self.series),
+            (self.type_label, self.unit_type), (self.capacity_label, self.min_capacity),
+        ]
         layout.addWidget(filters)
 
         context = QFrame()
@@ -158,8 +185,12 @@ class SelectionWorkspace(QWidget):
         self._rebuild_filters()
         self.refresh_table()
 
-    def set_context(self, system_name: str = "", load_btu: float = 0.0, load_cfm: float = 0.0):
+    def set_context(self, system_name: str = "", load_btu: float = 0.0,
+                    load_cfm: float = 0.0, derate_pct: float = 0.0):
         name = str(system_name or "").strip()
+        self.required_btu = max(0.0, float(load_btu or 0.0))
+        self.required_cfm = max(0.0, float(load_cfm or 0.0))
+        self.derate_pct = min(100.0, max(0.0, float(derate_pct or 0.0)))
         if name and not self.system_name.text().strip():
             self.system_name.setText(name)
         if name and (load_btu or load_cfm):
@@ -170,6 +201,7 @@ class SelectionWorkspace(QWidget):
             self.context_label.setText(f"Active HAP system: {name} · choose a catalogue model")
         else:
             self.context_label.setText("No HAP system active · browse the Carrier catalogue")
+        self.refresh_table()
 
     def set_selected_units(self, selected_units: dict):
         self.selected_units = selected_units or {}
@@ -224,6 +256,15 @@ class SelectionWorkspace(QWidget):
         minimum = self.min_capacity.value()
         if minimum and "Cooling Capacity (Btu/hr)" in frame:
             frame = frame[frame["Cooling Capacity (Btu/hr)"].fillna(0) >= minimum]
+        if self.auto_match.isChecked() and (self.required_btu > 0 or self.required_cfm > 0):
+            capacity_column = "Cooling Capacity (Btu/hr)"
+            if self.required_btu > 0 and capacity_column in frame:
+                effective_capacity = pd.to_numeric(frame[capacity_column], errors="coerce").fillna(0)
+                effective_capacity *= 1.0 - self.derate_pct / 100.0
+                frame = frame[effective_capacity >= self.required_btu]
+            if self.required_cfm > 0 and "High CFM (numeric)" in frame:
+                airflow = pd.to_numeric(frame["High CFM (numeric)"], errors="coerce").fillna(0)
+                frame = frame[airflow >= self.required_cfm]
         query = self.search.text().strip().casefold()
         if query:
             searchable = frame.fillna("").astype(str).agg(" ".join, axis=1).str.casefold()
@@ -234,6 +275,7 @@ class SelectionWorkspace(QWidget):
             ("System Model", "System Model"), ("Indoor Unit", "Indoor Unit Model"),
             ("Outdoor Unit", "Outdoor Unit Model"), ("Capacity (Btu/h)", "Cooling Capacity (Btu/hr)"),
             ("High CFM", "High CFM (numeric)"), ("EER", "EER (Btu/Wh)"), ("Type", "Type"),
+            ("Capacity fit", "__capacity_fit__"), ("Airflow fit", "__airflow_fit__"),
         ]
         self.table.setSortingEnabled(False)
         self.table.setColumnCount(len(columns))
@@ -242,7 +284,14 @@ class SelectionWorkspace(QWidget):
         for row_index, (source_index, row) in enumerate(frame.iterrows()):
             for col_index, (_label, column) in enumerate(columns):
                 value = row.get(column, "")
-                if pd.isna(value):
+                if column == "__capacity_fit__":
+                    capacity = float(row.get("Cooling Capacity (Btu/hr)", 0) or 0)
+                    effective = capacity * (1.0 - self.derate_pct / 100.0)
+                    text = f"{effective / self.required_btu * 100:.0f}%" if self.required_btu > 0 else "—"
+                elif column == "__airflow_fit__":
+                    airflow = float(row.get("High CFM (numeric)", 0) or 0)
+                    text = f"{airflow / self.required_cfm * 100:.0f}%" if self.required_cfm > 0 else "—"
+                elif pd.isna(value):
                     text = "—"
                 elif column in {"Cooling Capacity (Btu/hr)", "High CFM (numeric)"}:
                     text = f"{float(value):,.0f}"
@@ -261,9 +310,52 @@ class SelectionWorkspace(QWidget):
         self.lbl_series.setText(str(self.catalog["Series"].nunique() if "Series" in self.catalog else 0))
         self.lbl_selected.setText(str(len(self.selected_units)))
         self.status.setText(f"Showing {len(frame)} of {len(self.catalog)} catalogue model(s).")
+        if self.required_btu or self.required_cfm:
+            needs = []
+            if self.required_btu:
+                needs.append(f"{self.required_btu:,.0f} Btu/h")
+            if self.required_cfm:
+                needs.append(f"{self.required_cfm:,.0f} CFM")
+            summary = " + ".join(needs)
+            self.match_summary.setText(
+                f"Auto-sizing for {summary} · {len(frame)} candidate(s) meet requirements"
+                if self.auto_match.isChecked() else f"HAP design requirement: {summary}"
+            )
+        else:
+            self.match_summary.setText("Waiting for HAP load data · select a report to calculate fit")
 
     def _on_table_selection(self):
         self.add_button.setEnabled(self.table.currentRow() >= 0)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        compact = self.width() < 980
+        if compact == self._compact_filters:
+            return
+        self._compact_filters = compact
+        for label, control in self._filter_controls:
+            self._filter_layout.removeWidget(label)
+            self._filter_layout.removeWidget(control)
+        self._filter_layout.removeWidget(self.auto_match)
+        self._filter_layout.removeWidget(self.match_summary)
+        if compact:
+            self._filter_layout.addWidget(self.search_label, 0, 0)
+            self._filter_layout.addWidget(self.search, 0, 1, 1, 3)
+            for index, (label, control) in enumerate(self._filter_controls):
+                row, col = 1 + index // 2, (index % 2) * 2
+                self._filter_layout.addWidget(label, row, col)
+                self._filter_layout.addWidget(control, row, col + 1)
+            self._filter_layout.addWidget(self.auto_match, 3, 0, 1, 2)
+            self._filter_layout.addWidget(self.match_summary, 3, 2, 1, 2)
+        else:
+            self._filter_layout.addWidget(self.search_label, 0, 0)
+            self._filter_layout.addWidget(self.search, 0, 1, 1, 7)
+            for index, (label, control) in enumerate(self._filter_controls):
+                col = index * 2
+                self._filter_layout.addWidget(label, 1, col)
+                self._filter_layout.addWidget(control, 1, col + 1)
+            self._filter_layout.addWidget(self.auto_match, 2, 0, 1, 2)
+            self._filter_layout.addWidget(self.match_summary, 2, 2, 1, 6)
 
     def _emit_selected_model(self):
         row_index = self.table.currentRow()

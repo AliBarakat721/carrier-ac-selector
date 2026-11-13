@@ -2847,7 +2847,8 @@ class HAPToCarrierApp(QMainWindow):
         self.current_sensible = s.sensible_btu
         if hasattr(self, "selection_workspace"):
             self.selection_workspace.set_context(
-                self.current_system_name, self.current_btu, self.current_cfm
+                self.current_system_name, self.current_btu, self.current_cfm,
+                self.spin_derate.value() if hasattr(self, "spin_derate") else 0.0,
             )
         self.input_btu.setText(f"{s.btu:,.0f}" if s.btu > 0 else "")
         self.input_cfm.setText(f"{s.cfm:,.0f}" if s.cfm > 0 else "")

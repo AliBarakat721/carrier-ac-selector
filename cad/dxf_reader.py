@@ -14,6 +14,7 @@ from typing import Any, Iterable, Iterator
 
 import ezdxf
 from ezdxf.entities import DXFGraphic
+from ezdxf.math import OCS
 
 
 _UNITS = {
@@ -156,6 +157,74 @@ def _point(value: Any) -> tuple[float, float]:
     return (float(value[0]), float(value[1]))
 
 
+def _hatch_data(entity: DXFGraphic) -> dict[str, Any]:
+    """Return serialisable closed boundary rings from a HATCH entity.
+
+    HATCH points are stored in the entity OCS.  Converting every supported
+    boundary path to line edges gives downstream code one stable 2-D format,
+    while ezdxf performs the arc/ellipse/spline approximation.
+    """
+    try:
+        entity.paths.all_to_line_edges(num=64, spline_factor=8)
+    except (AttributeError, ValueError, TypeError):
+        return {"paths": [], "solid_fill": bool(entity.dxf.get("solid_fill", 0))}
+
+    extrusion = entity.dxf.get("extrusion", (0.0, 0.0, 1.0))
+    elevation = entity.dxf.get("elevation", (0.0, 0.0, 0.0))
+    ocs = OCS(extrusion)
+    rings: list[dict[str, Any]] = []
+    for path in entity.paths:
+        vertices = getattr(path, "vertices", None)
+        if vertices is not None:
+            if not getattr(path, "is_closed", False) or len(vertices) < 3:
+                continue
+            points = []
+            bulges = []
+            for vertex in vertices:
+                point = ocs.to_wcs((float(vertex[0]), float(vertex[1]), float(elevation[2])))
+                points.append((float(point.x), float(point.y)))
+                bulges.append(float(vertex[2]) if len(vertex) > 2 else 0.0)
+            rings.append(
+                {
+                    "points": points,
+                    "bulges": bulges,
+                    "closed": True,
+                    "path_type_flags": int(getattr(path, "path_type_flags", 0)),
+                }
+            )
+            continue
+        edges = getattr(path, "edges", None)
+        if not edges:
+            continue
+        points: list[tuple[float, float]] = []
+        for index, edge in enumerate(edges):
+            start = getattr(edge, "start", None)
+            end = getattr(edge, "end", None)
+            if start is None or end is None:
+                continue
+            if not points:
+                point = ocs.to_wcs((float(start[0]), float(start[1]), float(elevation[2])))
+                points.append((float(point.x), float(point.y)))
+            point = ocs.to_wcs((float(end[0]), float(end[1]), float(elevation[2])))
+            points.append((float(point.x), float(point.y)))
+        if len(points) < 4:
+            continue
+        if points[0] != points[-1]:
+            continue
+        rings.append(
+            {
+                "points": points[:-1],
+                "bulges": [0.0] * (len(points) - 1),
+                "closed": True,
+                "path_type_flags": int(getattr(path, "path_type_flags", 0)),
+            }
+        )
+    return {
+        "paths": rings,
+        "solid_fill": bool(entity.dxf.get("solid_fill", 0)),
+    }
+
+
 def _entity_data(entity: DXFGraphic) -> dict[str, Any]:
     kind = entity.dxftype()
     if kind == "LINE":
@@ -195,6 +264,8 @@ def _entity_data(entity: DXFGraphic) -> dict[str, Any]:
             "z_values": [float(vertex.z) for vertex in vertices],
             "closed": True,
         }
+    if kind == "HATCH":
+        return _hatch_data(entity)
     if kind == "SPLINE":
         # Keep the reader independent of ezdxf entity classes by storing a
         # deterministic polyline approximation for downstream polygonizing.

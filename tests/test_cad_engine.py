@@ -128,6 +128,84 @@ def test_solid_on_furniture_layer_is_rejected_by_review_rules(tmp_path):
     assert report.rooms[0].candidate_reasons == ("LAYER_CLASS_NOT_A_ROOM:FURNITURE",)
 
 
+def test_hatch_polyline_boundary_is_read_and_detected(tmp_path):
+    source = tmp_path / "hatch-polyline.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    hatch = drawing.modelspace().add_hatch(dxfattribs={"layer": "ROOMS"})
+    hatch.set_solid_fill()
+    hatch.paths.add_polyline_path([(0, 0), (5, 0), (5, 4), (0, 4)], is_closed=True)
+    drawing.saveas(source)
+
+    document = read_dxf(source)
+    rooms = detect_spaces(document, include_wall_lines=False)
+
+    assert document.entities_of_type("HATCH")[0].data["solid_fill"] is True
+    assert len(document.entities_of_type("HATCH")[0].data["paths"]) == 1
+    assert len(rooms) == 1
+    assert rooms[0].source == "hatch_polygon"
+    assert rooms[0].area == pytest.approx(20.0)
+
+
+def test_hatch_edge_path_with_arc_is_polygonized(tmp_path):
+    source = tmp_path / "hatch-edge-circle.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    hatch = drawing.modelspace().add_hatch(dxfattribs={"layer": "ROOMS"})
+    hatch.set_solid_fill()
+    edge_path = hatch.paths.add_edge_path()
+    edge_path.add_arc((0, 0), 5, 0, 360, ccw=True)
+    drawing.saveas(source)
+
+    document = read_dxf(source)
+    rooms = detect_spaces(document, include_wall_lines=False)
+
+    assert len(document.entities_of_type("HATCH")[0].data["paths"][0]["points"]) > 8
+    assert len(rooms) == 1
+    assert rooms[0].source == "hatch_polygon"
+    assert rooms[0].area == pytest.approx(math.pi * 25.0, rel=0.01)
+
+
+def test_hatch_inner_boundary_is_preserved_as_a_hole(tmp_path):
+    source = tmp_path / "hatch-hole.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    hatch = drawing.modelspace().add_hatch(dxfattribs={"layer": "ROOMS"})
+    hatch.set_solid_fill()
+    hatch.paths.add_polyline_path([(0, 0), (5, 0), (5, 4), (0, 4)], is_closed=True)
+    hatch.paths.add_polyline_path([(1, 1), (2, 1), (2, 3), (1, 3)], is_closed=True)
+    drawing.saveas(source)
+
+    rooms = detect_spaces(source, include_wall_lines=False)
+
+    assert len(rooms) == 1
+    assert rooms[0].source == "hatch_polygon"
+    assert rooms[0].area == pytest.approx(18.0)
+    assert len(rooms[0].polygon.interiors) == 1
+
+
+def test_matching_hatch_and_solid_are_deduplicated_into_one_space(tmp_path):
+    source = tmp_path / "hatch-solid-duplicate.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    modelspace = drawing.modelspace()
+    modelspace.add_solid(
+        [(0, 0), (5, 0), (0, 4), (5, 4)],
+        dxfattribs={"layer": "ROOMS"},
+    )
+    hatch = modelspace.add_hatch(dxfattribs={"layer": "ROOMS"})
+    hatch.set_solid_fill()
+    hatch.paths.add_polyline_path([(0, 0), (5, 0), (5, 4), (0, 4)], is_closed=True)
+    drawing.saveas(source)
+
+    rooms = detect_spaces(source, include_wall_lines=False)
+
+    assert len(rooms) == 1
+    assert rooms[0].source == "solid_polygon"
+    assert rooms[0].area == pytest.approx(20.0)
+    assert len(rooms[0].boundary_handles) == 2
+
+
 def test_block_room_geometry_is_transformed_and_inherits_insert_layer(tmp_path):
     source = tmp_path / "inserted-room.dxf"
     drawing = ezdxf.new("R2018")

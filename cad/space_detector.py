@@ -256,6 +256,97 @@ def _closed_polyline_spaces(document: CadDocument, arc_angle_tolerance: float) -
     return rooms
 
 
+def _hatch_polygons(data: dict[str, object]) -> list[Polygon]:
+    """Build polygons from HATCH boundary rings, preserving inner holes."""
+    rings: list[Polygon] = []
+    for path in data.get("paths", []):
+        if not isinstance(path, dict) or not path.get("closed"):
+            continue
+        points = path.get("points", [])
+        if not isinstance(points, list) or len(points) < 3:
+            continue
+        bulges = path.get("bulges", [])
+        if isinstance(bulges, list) and any(abs(float(value)) > 1e-12 for value in bulges):
+            points = _bulged_points(
+                points,
+                [float(value) for value in bulges],
+                True,
+                math.radians(1.0),
+            )
+        ring = Polygon(points)
+        if ring.is_empty or not ring.is_valid or ring.area <= 0:
+            continue
+        rings.append(ring)
+    if not rings:
+        return []
+
+    parents: list[int | None] = [None] * len(rings)
+    for index, ring in enumerate(rings):
+        point = ring.representative_point()
+        containing = [
+            candidate
+            for candidate, other in enumerate(rings)
+            if candidate != index and other.area > ring.area and other.covers(point)
+        ]
+        if containing:
+            parents[index] = min(containing, key=lambda candidate: rings[candidate].area)
+
+    depths: list[int] = []
+    for index in range(len(rings)):
+        depth = 0
+        parent = parents[index]
+        seen: set[int] = set()
+        while parent is not None and parent not in seen:
+            seen.add(parent)
+            depth += 1
+            parent = parents[parent]
+        depths.append(depth)
+
+    polygons: list[Polygon] = []
+    for index, ring in enumerate(rings):
+        if depths[index] % 2:
+            continue
+        holes = [
+            list(rings[child].exterior.coords)
+            for child in range(len(rings))
+            if parents[child] == index and depths[child] == depths[index] + 1
+        ]
+        polygons.append(Polygon(ring.exterior.coords, holes))
+    return polygons
+
+
+def _hatch_spaces(document: CadDocument) -> list[RoomSpace]:
+    rooms: list[RoomSpace] = []
+    scale = document.unit_scale_to_meters
+    for entity in document.entities_of_type("HATCH"):
+        for polygon in _hatch_polygons(entity.data):
+            if polygon.is_empty:
+                continue
+            geometry_status = "NEEDS_REVIEW" if polygon.is_valid else "INVALID_GEOMETRY"
+            diagnostic = None if polygon.is_valid else explain_validity(polygon)
+            raw_area = float(polygon.area)
+            raw_perimeter = float(polygon.length)
+            area, perimeter = _scaled_metrics(polygon, scale)
+            rooms.append(
+                RoomSpace(
+                    room_id=f"ROOM-{len(rooms) + 1:03d}",
+                    polygon=polygon,
+                    area=area,
+                    perimeter=perimeter,
+                    source="hatch_polygon",
+                    layer=entity.layer,
+                    status=geometry_status,
+                    boundary_handles=(entity.handle,) if entity.handle else (),
+                    unit_status="VERIFIED" if scale is not None else "UNIT_UNKNOWN",
+                    raw_area=raw_area,
+                    raw_perimeter=raw_perimeter,
+                    drawing_units=document.units,
+                    geometry_diagnostic=diagnostic,
+                )
+            )
+    return rooms
+
+
 def _snap_line_endpoints(lines: list[tuple[tuple[float, float], tuple[float, float], str | None]], gap_tolerance: float):
     if gap_tolerance <= 0:
         return lines, []
@@ -591,6 +682,7 @@ def detect_spaces(
         else None
     )
     rooms = _closed_polyline_spaces(document, arc_angle_tolerance)
+    rooms.extend(_hatch_spaces(document))
     if include_wall_lines:
         line_rooms, snap_diagnostics = _line_polygon_spaces(
             document,

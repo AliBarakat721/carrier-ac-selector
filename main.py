@@ -409,6 +409,33 @@ class UpdateWorker(QThread):
             self.update_failed.emit(str(exc))
 
 
+class CADImportWorker(QThread):
+    """Load a CAD file and detect room candidates without blocking Qt."""
+
+    loaded = Signal(object, object)
+    error = Signal(str)
+    progress = Signal(str)
+
+    def __init__(self, source_path: str, parent=None):
+        super().__init__(parent)
+        self.source_path = source_path
+
+    def run(self):
+        try:
+            suffix = Path(self.source_path).suffix.lower()
+            self.progress.emit(
+                "Converting DWG to DXF…" if suffix == ".dwg"
+                else "Reading CAD entities…"
+            )
+            document = read_cad_file(self.source_path)
+            self.progress.emit("Detecting room boundaries…")
+            session = RoomReviewSession(document=document)
+            self.loaded.emit(document, session)
+        except Exception as exc:
+            logger.exception("CAD import failed for %s", self.source_path)
+            self.error.emit(str(exc))
+
+
 # ── Main Application ───────────────────────────────────────────────────────────
 
 def _style_excel_file(path: str):
@@ -951,6 +978,8 @@ class HAPToCarrierApp(QMainWindow):
         self.setWindowTitle(f"Carrier AC Selector  —  HAP Report Analyzer v{APP_VERSION}")
         self._app_dir = os.path.dirname(os.path.abspath(__file__))
         self._update_worker = None
+        self._cad_worker = None
+        self._cad_loading_path = ""
 
         screen = QApplication.primaryScreen()
         available = screen.availableGeometry() if screen else None
@@ -1844,6 +1873,19 @@ class HAPToCarrierApp(QMainWindow):
         self.lbl_cad_landing_status.setWordWrap(True)
         self.lbl_cad_landing_status.setStyleSheet("color: #6b7280; padding: 4px 0;")
         card_layout.addWidget(self.lbl_cad_landing_status)
+        self.cad_progress = QProgressBar()
+        self.cad_progress.setRange(0, 100)
+        self.cad_progress.setValue(0)
+        self.cad_progress.setFormat("CAD ready")
+        self.cad_progress.setTextVisible(True)
+        self.cad_progress.setMinimumHeight(20)
+        self.cad_progress.setStyleSheet(
+            "QProgressBar { color: #e5e7eb; max-height: 20px; text-align: center; "
+            "background: #1f2937; border: 1px solid #374151; border-radius: 4px; }"
+            "QProgressBar::chunk { background: #3b82f6; border-radius: 3px; }"
+        )
+        self.cad_progress.setAccessibleName("CAD import progress")
+        card_layout.addWidget(self.cad_progress)
         layout.addWidget(card)
 
         buttons = QHBoxLayout()
@@ -1897,6 +1939,19 @@ class HAPToCarrierApp(QMainWindow):
         self.lbl_cad_status.setWordWrap(True)
         self.lbl_cad_status.setStyleSheet("color: #9ca3af; padding: 2px 0;")
         header_layout.addWidget(self.lbl_cad_status)
+        self.cad_workspace_progress = QProgressBar()
+        self.cad_workspace_progress.setRange(0, 100)
+        self.cad_workspace_progress.setValue(0)
+        self.cad_workspace_progress.setFormat("Waiting for CAD import")
+        self.cad_workspace_progress.setTextVisible(True)
+        self.cad_workspace_progress.setMinimumHeight(20)
+        self.cad_workspace_progress.setStyleSheet(
+            "QProgressBar { color: #e5e7eb; max-height: 20px; text-align: center; "
+            "background: #1f2937; border: 1px solid #374151; border-radius: 4px; }"
+            "QProgressBar::chunk { background: #3b82f6; border-radius: 3px; }"
+        )
+        self.cad_workspace_progress.setAccessibleName("CAD workspace import progress")
+        header_layout.addWidget(self.cad_workspace_progress)
         self.lbl_cad_hap_status = QLabel("No HAP report paired with this drawing.")
         self.lbl_cad_hap_status.setWordWrap(True)
         self.lbl_cad_hap_status.setStyleSheet("color: #9ca3af; padding: 2px 0;")
@@ -1972,19 +2027,61 @@ class HAPToCarrierApp(QMainWindow):
         self.tabs.setCurrentWidget(self.cad_workspace_tab)
 
     def _load_cad(self, path: str):
-        try:
-            document = read_cad_file(path)
-            session = RoomReviewSession(document=document)
-        except Exception as exc:
-            self.cad_source_path = ""
-            self.cad_document = None
-            self.cad_rooms = []
-            self.cad_diagnostics = []
-            self.cad_review_session = None
-            self._render_cad_rooms()
-            QMessageBox.critical(self, "CAD Import Error", str(exc))
+        if self._cad_worker is not None and self._cad_worker.isRunning():
             return
 
+        self._cad_loading_path = path
+        self._set_cad_loading(True, path)
+        worker = CADImportWorker(path, self)
+        worker.progress.connect(self._on_cad_progress)
+        worker.loaded.connect(self._on_cad_loaded)
+        worker.error.connect(self._on_cad_error)
+        worker.finished.connect(worker.deleteLater)
+        self._cad_worker = worker
+        worker.start()
+
+    def _set_cad_loading(self, loading: bool, path: str = ""):
+        """Keep file actions responsive and explain the current CAD phase."""
+        for name in ("btn_cad_upload", "btn_cad_workspace_upload"):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.setEnabled(not loading)
+        if loading:
+            self._set_cad_progress(5, "Starting CAD import")
+            self._on_cad_progress(
+                "Converting DWG to DXF…" if path.lower().endswith(".dwg")
+                else "Reading CAD entities…"
+            )
+
+    def _set_cad_progress(self, value: int, label: str):
+        """Update every visible CAD progress bar, including the landing page."""
+        for name in ("cad_progress", "cad_workspace_progress"):
+            progress = getattr(self, name, None)
+            if progress is not None:
+                progress.setValue(value)
+                progress.setFormat(f"{label} · %p%")
+
+    def _on_cad_progress(self, message: str):
+        stage_values = {
+            "Converting DWG to DXF…": 25,
+            "Reading CAD entities…": 45,
+            "Detecting room boundaries…": 75,
+        }
+        self._set_cad_progress(stage_values.get(message, 10), message.rstrip("…"))
+        self._set_status(message)
+        label = getattr(self, "lbl_cad_status", None)
+        if label is not None:
+            label.setText(message)
+        landing = getattr(self, "lbl_cad_landing_status", None)
+        if landing is not None:
+            landing.setText(message)
+
+    def _on_cad_loaded(self, document, session):
+        path = self._cad_loading_path
+        self._set_cad_progress(100, "CAD import complete")
+        self._cad_worker = None
+        self._cad_loading_path = ""
+        self._set_cad_loading(False)
         self.cad_source_path = path
         self.cad_document = document
         self.cad_room_systems.clear()
@@ -2002,6 +2099,19 @@ class HAPToCarrierApp(QMainWindow):
                 f"Workspace opened for {os.path.basename(path)}. "
                 "Review the detected rooms in the CAD tab before exporting."
             )
+
+    def _on_cad_error(self, message: str):
+        self._set_cad_progress(0, "CAD import failed")
+        self._cad_worker = None
+        self._cad_loading_path = ""
+        self._set_cad_loading(False)
+        self.cad_source_path = ""
+        self.cad_document = None
+        self.cad_rooms = []
+        self.cad_diagnostics = []
+        self.cad_review_session = None
+        self._render_cad_rooms()
+        QMessageBox.critical(self, "CAD Import Error", message)
 
     def review_cad_rooms(self, initial: bool = False):
         """Open the layer / room-candidate review dialog for the loaded drawing."""
@@ -4153,6 +4263,16 @@ class HAPToCarrierApp(QMainWindow):
             if not w.wait(30000):      # give Tesseract time to finish
                 w.terminate()
                 w.wait()
+        cad_worker = getattr(self, "_cad_worker", None)
+        if cad_worker is not None and cad_worker.isRunning():
+            for sig in (cad_worker.loaded, cad_worker.error, cad_worker.progress):
+                try:
+                    sig.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+            if not cad_worker.wait(30000):
+                cad_worker.terminate()
+                cad_worker.wait()
         event.accept()
 
     def dragEnterEvent(self, event):

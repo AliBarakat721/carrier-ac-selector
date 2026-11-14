@@ -305,6 +305,14 @@ class RoomReviewDialog(QDialog):
     def _render_status(self) -> None:
         self.lbl_status.setText(self.session.status_line())
         blockers = self.session.blockers()
+        pending = bool(self.session.pending_rooms)
+        self.btn_accept_all.setEnabled(pending and not self._refreshing)
+        self.btn_accept_all.setToolTip(
+            "Accept every candidate awaiting review."
+            if pending else
+            "No candidates are awaiting review; blocked candidates cannot be accepted."
+        )
+        self.btn_reject_all.setEnabled(pending and not self._refreshing)
         self.btn_apply.setEnabled(bool(self.session.accepted_rooms))
         if blockers:
             self.btn_apply.setToolTip("\n".join(blockers))

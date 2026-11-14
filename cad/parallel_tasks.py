@@ -9,13 +9,14 @@ from __future__ import annotations
 from collections import Counter
 
 
-def detect_rooms_task(document, fast_mode: bool = True):
+def detect_rooms_task(document, fast_mode: bool = True, **options):
     """Run the expensive room detector in a child process."""
     from .space_detector import detect_spaces_with_review
 
     return detect_spaces_with_review(
         document,
         include_non_room_layer_candidates=not fast_mode,
+        **options,
     )
 
 

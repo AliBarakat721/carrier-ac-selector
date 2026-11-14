@@ -15,7 +15,7 @@ project file would store.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -35,8 +35,10 @@ from PySide6.QtWidgets import (
 )
 
 from cad.dxf_reader import REVIEWABLE_UNITS
+from cad.dxf_reader import unit_code_for, unit_name, unit_scale_to_meters
 from cad.layer_analyzer import LayerClass
 from cad.room_review import ReviewStatus, RoomReviewSession
+from cad.parallel_tasks import detect_rooms_task
 
 _STATUS_COLORS = {
     ReviewStatus.AUTO_ACCEPTED.value: "#34d399",
@@ -47,6 +49,40 @@ _STATUS_COLORS = {
 }
 
 
+class ReviewRefreshWorker(QThread):
+    """Re-run room classification without blocking a large review dialog."""
+
+    completed = Signal(int, object)
+    failed = Signal(int, str)
+
+    def __init__(self, job_id: int, session: RoomReviewSession):
+        super().__init__()
+        self.job_id = job_id
+        self.document = session.document
+        self.layer_overrides = dict(session.layer_overrides)
+        self.units_override = session.units_override
+        self.min_area_m2 = session.min_area_m2
+        self.max_area_m2 = session.max_area_m2
+        self.allow_circular_curves = session.allow_circular_curves
+        self.require_label = session.require_label
+
+    def run(self):
+        try:
+            report = detect_rooms_task(
+                self.document,
+                fast_mode=True,
+                layer_overrides=self.layer_overrides,
+                units_override=self.units_override,
+                min_area_m2=self.min_area_m2,
+                max_area_m2=self.max_area_m2,
+                allow_circular_curves=self.allow_circular_curves,
+                require_label=self.require_label,
+            )
+            self.completed.emit(self.job_id, report)
+        except Exception as exc:
+            self.failed.emit(self.job_id, str(exc))
+
+
 class RoomReviewDialog(QDialog):
     """Review layers and room candidates before they reach the HVAC workflow."""
 
@@ -54,6 +90,9 @@ class RoomReviewDialog(QDialog):
         super().__init__(parent)
         self.session = session
         self._loading = False
+        self._refresh_job_id = 0
+        self._refresh_worker = None
+        self._refreshing = False
         self.setWindowTitle("CAD Room & Layer Review")
         self.resize(1180, 720)
         self._build_ui()
@@ -272,34 +311,91 @@ class RoomReviewDialog(QDialog):
         else:
             self.btn_apply.setToolTip("All candidates decided and units confirmed.")
 
+    def _set_refresh_busy(self, busy: bool) -> None:
+        self._refreshing = busy
+        for widget in (
+            self.cmb_units,
+            self.spin_min_area,
+            self.tbl_layers,
+            self.btn_accept_all,
+            self.btn_reject_all,
+            self.btn_reset,
+            self.btn_apply,
+        ):
+            widget.setEnabled(not busy)
+        if busy:
+            self.lbl_status.setText("Re-analyzing room boundaries… Please wait.")
+            self.btn_cancel.setText("Cancel")
+
+    def _schedule_refresh(self) -> None:
+        """Refresh synchronously for small plans, asynchronously for large ones."""
+        if self.session.document.entity_count < 20000:
+            self.session.refresh()
+            self._refresh()
+            return
+
+        old_worker = self._refresh_worker
+        if old_worker is not None and old_worker.isRunning():
+            old_worker.requestInterruption()
+        self._refresh_job_id += 1
+        job_id = self._refresh_job_id
+        self._set_refresh_busy(True)
+        worker = ReviewRefreshWorker(job_id, self.session)
+        worker.completed.connect(self._on_refresh_completed)
+        worker.failed.connect(self._on_refresh_failed)
+        worker.finished.connect(worker.deleteLater)
+        self._refresh_worker = worker
+        worker.start()
+
+    def _on_refresh_completed(self, job_id: int, report) -> None:
+        if job_id != self._refresh_job_id:
+            return
+        self.session.report = report
+        self._refresh_worker = None
+        self._set_refresh_busy(False)
+        self._refresh()
+
+    def _on_refresh_failed(self, job_id: int, message: str) -> None:
+        if job_id != self._refresh_job_id:
+            return
+        self._refresh_worker = None
+        self._set_refresh_busy(False)
+        QMessageBox.critical(self, "Room Analysis Error", message)
+
     # -- event handlers --------------------------------------------------
     def _on_layer_class_changed(self, layer: str, combo: QComboBox) -> None:
-        if self._loading:
+        if self._loading or self._refreshing:
             return
         value = combo.currentData()
         if not value:
             return
-        self.session.set_layer_class(layer, value)
-        self._refresh()
+        self.session.layer_overrides[str(layer)] = LayerClass(str(value))
+        self._schedule_refresh()
 
     def _on_units_changed(self) -> None:
-        if self._loading:
+        if self._loading or self._refreshing:
             return
         units = self.cmb_units.currentData()
         try:
             if units:
-                self.session.set_units(units)
+                if unit_scale_to_meters(units) is None:
+                    raise ValueError(f"Unsupported drawing units: {units}")
+                code = unit_code_for(units)
+                self.session.units_override = (
+                    unit_name(code) if code is not None else str(units)
+                )
             else:
-                self.session.clear_units()
+                self.session.units_override = None
         except ValueError as exc:  # pragma: no cover - defensive, combo is constrained
             QMessageBox.warning(self, "Drawing Units", str(exc))
-        self._refresh()
+            return
+        self._schedule_refresh()
 
     def _on_min_area_changed(self, value: float) -> None:
-        if self._loading:
+        if self._loading or self._refreshing:
             return
-        self.session.set_min_area_m2(float(value))
-        self._refresh()
+        self.session.min_area_m2 = float(value)
+        self._schedule_refresh()
 
     def _accept_room(self, room_id: str) -> None:
         try:

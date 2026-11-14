@@ -4,7 +4,7 @@ import math
 from dataclasses import replace
 from pathlib import Path
 from typing import Iterable
-from PySide6.QtCore import Qt, QPointF, QRectF, QSize, Signal
+from PySide6.QtCore import Qt, QPointF, QRectF, QSize, Signal, QTimer
 from PySide6.QtGui import QColor, QBrush, QPen, QPainter, QPainterPath, QIcon, QPixmap, QFont
 from PySide6.QtWidgets import (
     QFrame,
@@ -151,6 +151,7 @@ class CadViewport(QGraphicsView):
         self._preview_item = None
         self._cursor_world_point = None
         self._transform_value = 0.0
+        self._render_token = 0
         self._draw_grid()
 
     def set_mode(self, mode: str):
@@ -204,6 +205,7 @@ class CadViewport(QGraphicsView):
             y += step
 
     def clear_document(self):
+        self._render_token += 1
         self.scene.clear()
         self._room_items.clear()
         self._layer_items.clear()
@@ -211,6 +213,7 @@ class CadViewport(QGraphicsView):
         self._draw_grid()
 
     def render_document(self, document, rooms: Iterable[object] = ()):
+        self._render_token += 1
         self.clear_document()
         self._rooms = list(rooms)
         self._render_entities(document.entities if document else [])
@@ -287,8 +290,83 @@ class CadViewport(QGraphicsView):
                     item = self.scene.addPath(path, pen, QBrush(Qt.NoBrush))
                     self._register(item, layer, entity)
 
-    def _render_text_entities(self, entities, default_height: float):
+    def render_document_incremental(
+        self,
+        document,
+        rooms: Iterable[object] = (),
+        *,
+        batch_size: int = 250,
+        progress=None,
+    ):
+        """Render a large document in event-loop-sized batches.
+
+        ``progress`` receives integer percentages. Each batch is scheduled with
+        ``QTimer`` so mouse and paint events can run between batches.
+        """
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
+        self.clear_document()
+        token = self._render_token
+        self._rooms = list(rooms)
+        self._render_entities_queue = list(document.entities if document else [])
+        self._render_text_queue = []
+        self._render_rooms_queue = self._rooms
+        self._render_index = 0
+        self._render_batch_size = batch_size
+        self._render_progress = progress
         self._rendered_text_labels = []
+
+        def render_next():
+            if token != self._render_token:
+                return
+            queue = self._render_entities_queue
+            if self._render_index < len(queue):
+                end = min(self._render_index + self._render_batch_size, len(queue))
+                self._render_entities(queue[self._render_index:end])
+                self._render_index = end
+                if progress:
+                    progress(min(70, int(10 + 60 * end / max(len(queue), 1))))
+                QTimer.singleShot(0, render_next)
+                return
+
+            if not self._render_text_queue:
+                self._render_text_queue = [
+                    entity for entity in self._render_entities_queue
+                    if entity.entity_type.upper() in {"TEXT", "MTEXT", "ATTRIB"}
+                ]
+                self._render_index = 0
+                rect = self.scene.itemsBoundingRect()
+                if rect.isValid() and rect.width() > 0 and rect.height() > 0:
+                    self._render_annotation_height = max(
+                        min(rect.width(), rect.height()) * 0.012, 0.01
+                    )
+                else:
+                    self._render_annotation_height = 1.0
+
+            queue = self._render_text_queue
+            if self._render_index < len(queue):
+                end = min(self._render_index + self._render_batch_size, len(queue))
+                self._render_text_entities(
+                    queue[self._render_index:end],
+                    self._render_annotation_height,
+                    reset=False,
+                )
+                self._render_index = end
+                if progress:
+                    progress(min(88, int(70 + 18 * end / max(len(queue), 1))))
+                QTimer.singleShot(0, render_next)
+                return
+
+            self._render_rooms(self._render_rooms_queue, self._render_annotation_height)
+            self._fit_scene_rect(self.scene.itemsBoundingRect())
+            if progress:
+                progress(100)
+
+        QTimer.singleShot(0, render_next)
+
+    def _render_text_entities(self, entities, default_height: float, *, reset: bool = True):
+        if reset:
+            self._rendered_text_labels = []
         for entity in entities:
             data = entity.data
             insert = data.get("insert")
@@ -877,7 +955,13 @@ class CadWorkspace(QWidget):
         self.rooms = list(rooms or [])
         self.assignments = dict(assignments or {})
         self.selected_units = selected_units or {}
-        self.viewport.render_document(document, self.rooms)
+        self.viewport.render_document_incremental(
+            document,
+            self.rooms,
+            progress=lambda value: self.status.setText(
+                f"Rendering CAD entities… {value}%"
+            ),
+        )
         self.browser.set_project_state(document, self.rooms, self.assignments, self.selected_units)
         self.room_list.clear()
         for room in self.rooms:

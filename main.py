@@ -33,6 +33,9 @@ import logging
 import webbrowser
 import errno
 import tempfile
+import threading
+import time
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from contextlib import contextmanager
 import pandas as pd
@@ -42,6 +45,7 @@ import updater
 from cad.dxf_exporter import export_hvac_dxf
 from cad.importer import read_cad_file
 from cad.room_review import RoomReviewSession
+from cad.parallel_tasks import detect_rooms_task, summarize_document_task
 from room_review_dialog import RoomReviewDialog
 from cad.workflow import RoomAssignment, build_indoor_placements, match_room_systems
 from integration.models import RoomLoadInput
@@ -410,30 +414,68 @@ class UpdateWorker(QThread):
 
 
 class CADImportWorker(QThread):
-    """Load a CAD file and detect room candidates without blocking Qt."""
+    """Load CAD in a QThread and parallelize CPU-heavy analysis."""
 
-    loaded = Signal(object, object)
-    error = Signal(str)
-    progress = Signal(str)
+    loaded = Signal(int, object, object, object)
+    error = Signal(int, str)
+    progress = Signal(int, int, str)
 
-    def __init__(self, source_path: str, parent=None):
+    def __init__(self, source_path: str, job_id: int, parent=None):
         super().__init__(parent)
         self.source_path = source_path
+        self.job_id = job_id
+        self._cancel_event = threading.Event()
+
+    def request_cancel(self):
+        """Request cooperative cancellation; running child work is abandoned."""
+        self._cancel_event.set()
+
+    def _emit_progress(self, value: int, message: str):
+        self.progress.emit(self.job_id, value, message)
 
     def run(self):
+        executor = None
         try:
             suffix = Path(self.source_path).suffix.lower()
-            self.progress.emit(
+            self._emit_progress(
+                25 if suffix == ".dwg" else 45,
                 "Converting DWG to DXF…" if suffix == ".dwg"
-                else "Reading CAD entities…"
+                else "Reading CAD entities…",
             )
             document = read_cad_file(self.source_path)
-            self.progress.emit("Detecting room boundaries…")
-            session = RoomReviewSession(document=document)
-            self.loaded.emit(document, session)
+            if self._cancel_event.is_set():
+                return
+
+            self._emit_progress(55, "Analyzing layers and CAD metadata…")
+            executor = ProcessPoolExecutor(max_workers=2)
+            room_future = executor.submit(detect_rooms_task, document)
+            summary_future = executor.submit(summarize_document_task, document)
+            while not room_future.done() or not summary_future.done():
+                if self._cancel_event.is_set():
+                    room_future.cancel()
+                    summary_future.cancel()
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    executor = None
+                    return
+                self._emit_progress(75, "Detecting room boundaries…")
+                time.sleep(0.05)
+
+            report = room_future.result()
+            summary = summary_future.result()
+            executor.shutdown(wait=True)
+            executor = None
+            if self._cancel_event.is_set():
+                return
+            session = RoomReviewSession(document=document, report=report)
+            self._emit_progress(95, "Finalizing CAD review data…")
+            self.loaded.emit(self.job_id, document, session, summary)
         except Exception as exc:
             logger.exception("CAD import failed for %s", self.source_path)
-            self.error.emit(str(exc))
+            if not self._cancel_event.is_set():
+                self.error.emit(self.job_id, str(exc))
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
 
 
 # ── Main Application ───────────────────────────────────────────────────────────
@@ -979,7 +1021,10 @@ class HAPToCarrierApp(QMainWindow):
         self._app_dir = os.path.dirname(os.path.abspath(__file__))
         self._update_worker = None
         self._cad_worker = None
+        self._cad_workers = set()
         self._cad_loading_path = ""
+        self._cad_job_id = 0
+        self._cad_summary = {}
 
         screen = QApplication.primaryScreen()
         available = screen.availableGeometry() if screen else None
@@ -1841,8 +1886,8 @@ class HAPToCarrierApp(QMainWindow):
         title.setObjectName("lbl_app_title")
         layout.addWidget(title)
         intro = QLabel(
-            "ارفع ملف DWG أو DXF لفتح Workspace مستقل للعمل على المخطط. "
-            "سيظل الـ Workspace مرتبطًا بتقرير HAP، الوحدات المختارة، والسلة الحالية."
+            "Upload a DWG or DXF file to open an independent workspace for the drawing. "
+            "The workspace remains linked to the HAP report, selected units, and current cart."
         )
         intro.setWordWrap(True)
         intro.setStyleSheet("color: #cbd5e1; font-size: 14px; padding: 2px 0;")
@@ -2027,16 +2072,24 @@ class HAPToCarrierApp(QMainWindow):
         self.tabs.setCurrentWidget(self.cad_workspace_tab)
 
     def _load_cad(self, path: str):
-        if self._cad_worker is not None and self._cad_worker.isRunning():
-            return
-
+        previous = self._cad_worker
+        if previous is not None and previous.isRunning():
+            previous.request_cancel()
+        self._cad_job_id += 1
+        job_id = self._cad_job_id
         self._cad_loading_path = path
         self._set_cad_loading(True, path)
-        worker = CADImportWorker(path, self)
+        # Show the workspace immediately; the document and rooms arrive later.
+        self._open_cad_workspace(path)
+        self.cad_workspace.set_project_data(None, [])
+        self.cad_workspace.status.setText("Loading CAD document…")
+        worker = CADImportWorker(path, job_id, self)
         worker.progress.connect(self._on_cad_progress)
         worker.loaded.connect(self._on_cad_loaded)
         worker.error.connect(self._on_cad_error)
         worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(lambda worker=worker: self._cad_workers.discard(worker))
+        self._cad_workers.add(worker)
         self._cad_worker = worker
         worker.start()
 
@@ -2048,10 +2101,13 @@ class HAPToCarrierApp(QMainWindow):
                 button.setEnabled(not loading)
         if loading:
             self._set_cad_progress(5, "Starting CAD import")
-            self._on_cad_progress(
+            message = (
                 "Converting DWG to DXF…" if path.lower().endswith(".dwg")
                 else "Reading CAD entities…"
             )
+            self._set_cad_progress(25 if path.lower().endswith(".dwg") else 45,
+                                   message.rstrip("…"))
+            self._set_status(message)
 
     def _set_cad_progress(self, value: int, label: str):
         """Update every visible CAD progress bar, including the landing page."""
@@ -2061,13 +2117,10 @@ class HAPToCarrierApp(QMainWindow):
                 progress.setValue(value)
                 progress.setFormat(f"{label} · %p%")
 
-    def _on_cad_progress(self, message: str):
-        stage_values = {
-            "Converting DWG to DXF…": 25,
-            "Reading CAD entities…": 45,
-            "Detecting room boundaries…": 75,
-        }
-        self._set_cad_progress(stage_values.get(message, 10), message.rstrip("…"))
+    def _on_cad_progress(self, job_id: int, value: int, message: str):
+        if job_id != self._cad_job_id:
+            return
+        self._set_cad_progress(value, message.rstrip("…"))
         self._set_status(message)
         label = getattr(self, "lbl_cad_status", None)
         if label is not None:
@@ -2076,11 +2129,14 @@ class HAPToCarrierApp(QMainWindow):
         if landing is not None:
             landing.setText(message)
 
-    def _on_cad_loaded(self, document, session):
+    def _on_cad_loaded(self, job_id: int, document, session, summary):
+        if job_id != self._cad_job_id:
+            return
         path = self._cad_loading_path
         self._set_cad_progress(100, "CAD import complete")
         self._cad_worker = None
         self._cad_loading_path = ""
+        self._cad_summary = dict(summary or {})
         self._set_cad_loading(False)
         self.cad_source_path = path
         self.cad_document = document
@@ -2090,7 +2146,7 @@ class HAPToCarrierApp(QMainWindow):
         self.cad_room_verified.clear()
         self.cad_review_session = session
         self.cad_diagnostics = list(session.report.diagnostics) if session.report else []
-        self._open_cad_workspace(path)
+        self.cad_workspace.set_project_data(document, [])
         # Phase 3: nothing becomes a room without review.  The dialog is the only
         # path from "polygon in the drawing" to "room in the HVAC workflow".
         self.review_cad_rooms(initial=True)
@@ -2100,7 +2156,9 @@ class HAPToCarrierApp(QMainWindow):
                 "Review the detected rooms in the CAD tab before exporting."
             )
 
-    def _on_cad_error(self, message: str):
+    def _on_cad_error(self, job_id: int, message: str):
+        if job_id != self._cad_job_id:
+            return
         self._set_cad_progress(0, "CAD import failed")
         self._cad_worker = None
         self._cad_loading_path = ""
@@ -4263,8 +4321,10 @@ class HAPToCarrierApp(QMainWindow):
             if not w.wait(30000):      # give Tesseract time to finish
                 w.terminate()
                 w.wait()
-        cad_worker = getattr(self, "_cad_worker", None)
-        if cad_worker is not None and cad_worker.isRunning():
+        for cad_worker in list(getattr(self, "_cad_workers", ())):
+            if not cad_worker.isRunning():
+                continue
+            cad_worker.request_cancel()
             for sig in (cad_worker.loaded, cad_worker.error, cad_worker.progress):
                 try:
                     sig.disconnect()

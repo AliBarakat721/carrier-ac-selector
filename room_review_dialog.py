@@ -234,29 +234,33 @@ class RoomReviewDialog(QDialog):
                         item.setForeground(QColor(color))
                 self.tbl_rooms.setItem(row_index, column, item)
 
-            decision = QWidget()
-            decision_layout = QHBoxLayout(decision)
-            decision_layout.setContentsMargins(2, 2, 2, 2)
-            decision_layout.setSpacing(4)
-            accept = QPushButton("Accept")
-            accept.setEnabled(row.status is ReviewStatus.NEEDS_REVIEW)
-            accept.clicked.connect(
-                lambda _checked=False, room_id=row.room_id: self._accept_room(room_id)
-            )
-            reject = QPushButton("Reject")
-            reject.setEnabled(row.status is not ReviewStatus.BLOCKED)
-            reject.clicked.connect(
-                lambda _checked=False, room_id=row.room_id: self._reject_room(room_id)
-            )
-            clear = QPushButton("Clear")
-            clear.setEnabled(row.action != "PENDING")
-            clear.clicked.connect(
-                lambda _checked=False, room_id=row.room_id: self._clear_room(room_id)
-            )
-            decision_layout.addWidget(accept)
-            decision_layout.addWidget(reject)
-            decision_layout.addWidget(clear)
-            self.tbl_rooms.setCellWidget(row_index, 8, decision)
+            if row.status is ReviewStatus.BLOCKED:
+                blocked = QLabel("Blocked by rules")
+                blocked.setToolTip(row.reasons_text)
+                self.tbl_rooms.setCellWidget(row_index, 8, blocked)
+            else:
+                decision = QWidget()
+                decision_layout = QHBoxLayout(decision)
+                decision_layout.setContentsMargins(2, 2, 2, 2)
+                decision_layout.setSpacing(4)
+                accept = QPushButton("Accept")
+                accept.setEnabled(row.status is ReviewStatus.NEEDS_REVIEW)
+                accept.clicked.connect(
+                    lambda _checked=False, room_id=row.room_id: self._accept_room(room_id)
+                )
+                reject = QPushButton("Reject")
+                reject.clicked.connect(
+                    lambda _checked=False, room_id=row.room_id: self._reject_room(room_id)
+                )
+                clear = QPushButton("Clear")
+                clear.setEnabled(row.action != "PENDING")
+                clear.clicked.connect(
+                    lambda _checked=False, room_id=row.room_id: self._clear_room(room_id)
+                )
+                decision_layout.addWidget(accept)
+                decision_layout.addWidget(reject)
+                decision_layout.addWidget(clear)
+                self.tbl_rooms.setCellWidget(row_index, 8, decision)
         self.tbl_rooms.resizeColumnsToContents()
 
     def _render_status(self) -> None:

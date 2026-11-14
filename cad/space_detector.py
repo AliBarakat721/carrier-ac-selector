@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import hashlib
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from shapely.geometry import LineString, Point, Polygon
@@ -932,6 +932,7 @@ def detect_spaces_with_review(
     label_tolerance: float = 0.25,
     arc_angle_tolerance: float = math.radians(1.0),
     diagnostics: list[dict[str, object]] | None = None,
+    include_non_room_layer_candidates: bool = True,
 ) -> RoomDetectionReport:
     """Detect rooms **and** classify every candidate for human review.
 
@@ -989,8 +990,30 @@ def detect_spaces_with_review(
             }
         )
 
+    detection_document = document
+    if not include_non_room_layer_candidates:
+        allowed_layers = {
+            str(layer).casefold() for layer in (wall_layers | label_layers)
+        }
+        filtered_entities = [
+            entity for entity in document.entities
+            if entity.layer.casefold() in allowed_layers
+        ]
+        skipped = len(document.entities) - len(filtered_entities)
+        detection_document = replace(document, entities=filtered_entities)
+        collected.append(
+            {
+                "type": "non_room_layer_candidates_filtered",
+                "message": (
+                    f"Skipped {skipped} entities from layers that are not classified "
+                    "as room boundaries or room labels."
+                ),
+                "skipped_entities": skipped,
+            }
+        )
+
     rooms = detect_spaces(
-        document,
+        detection_document,
         include_wall_lines=effective_wall_detection,
         wall_layers=wall_layers or None,
         label_layers=label_layers or None,

@@ -447,8 +447,22 @@ class CADImportWorker(QThread):
                 return
 
             self._emit_progress(55, "Analyzing layers and CAD metadata…")
+            # Pickling a very large CadDocument can cost more than the geometry
+            # analysis itself. Large drawings stay in this QThread; the UI is
+            # still responsive, while smaller drawings use two child processes.
+            if document.entity_count >= 20000:
+                self._emit_progress(70, "Detecting room boundaries…")
+                report = detect_rooms_task(document, fast_mode=True)
+                summary = summarize_document_task(document)
+                if self._cancel_event.is_set():
+                    return
+                self._emit_progress(95, "Finalizing CAD review data…")
+                session = RoomReviewSession(document=document, report=report)
+                self.loaded.emit(self.job_id, document, session, summary)
+                return
+
             executor = ProcessPoolExecutor(max_workers=2)
-            room_future = executor.submit(detect_rooms_task, document)
+            room_future = executor.submit(detect_rooms_task, document, True)
             summary_future = executor.submit(summarize_document_task, document)
             while not room_future.done() or not summary_future.done():
                 if self._cancel_event.is_set():

@@ -23,6 +23,8 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTreeWidget,
     QTreeWidgetItem,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -703,9 +705,15 @@ class CadWorkspace(QWidget):
         self.properties = PropertiesInspector()
         self.status = QLabel("No drawing loaded · Import a DXF or DWG floor plan to begin")
         self.status.setObjectName("cad_status")
-        self.room_list = QListWidget()
-        self.room_list.setMaximumHeight(112)
-        self.room_list.itemClicked.connect(self._select_room_from_list)
+        self.room_table = QTableWidget(0, 4)
+        self.room_table.setObjectName("cad_room_table")
+        self.room_table.setHorizontalHeaderLabels(["Room", "Area (m²)", "Status", "Layer"])
+        self.room_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.room_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.room_table.setMaximumHeight(150)
+        self.room_table.cellClicked.connect(self._select_room_from_table)
+        # Compatibility alias for integrations that used the old list widget.
+        self.room_list = self.room_table
         self._build()
 
     def _build(self):
@@ -785,7 +793,7 @@ class CadWorkspace(QWidget):
         center_layout = QVBoxLayout(center)
         center_layout.setContentsMargins(0, 0, 0, 0)
         center_layout.addWidget(self.viewport, 1)
-        center_layout.addWidget(self.room_list)
+        center_layout.addWidget(self.room_table)
         splitter.addWidget(center)
         splitter.addWidget(self.properties)
         splitter.setSizes([230, 900, 290])
@@ -970,25 +978,39 @@ class CadWorkspace(QWidget):
             ),
         )
         self.browser.set_project_state(document, self.rooms, self.assignments, self.selected_units)
-        self.room_list.clear()
+        self.room_table.setRowCount(0)
         for room in self.rooms:
-            item = QListWidgetItem(f"{room.label or room.room_id}   ·   {room.status}")
+            row = self.room_table.rowCount()
+            self.room_table.insertRow(row)
+            item = QTableWidgetItem(room.label or room.room_id)
             item.setData(Qt.UserRole, room.room_id)
-            self.room_list.addItem(item)
+            self.room_table.setItem(row, 0, item)
+            self.room_table.setItem(row, 1, QTableWidgetItem(f"{room.area:,.2f}"))
+            self.room_table.setItem(row, 2, QTableWidgetItem(str(room.status)))
+            self.room_table.setItem(row, 3, QTableWidgetItem(room.effective_layer or "—"))
+        self.room_table.resizeColumnsToContents()
         filename = Path(document.path).name if document else "No drawing"
         diagnostics = f" · {len(self.rooms)} rooms · {len(getattr(document, 'entities', []))} entities"
         self.status.setText(f"{filename}{diagnostics}")
         if not self.rooms:
             self.properties.value.setText("No room boundaries detected.\nImport a drawing or review geometry diagnostics.")
 
-    def _select_room_from_list(self, item):
-        self._select_room_by_id(item.data(Qt.UserRole))
+    def _select_room_from_table(self, row, _column):
+        item = self.room_table.item(row, 0)
+        if item is not None:
+            self._select_room_by_id(item.data(Qt.UserRole))
 
     def _select_room_by_id(self, room_id):
         room = next((candidate for candidate in self.rooms if candidate.room_id == room_id), None)
         if room:
             self._select_room(room)
             self.viewport._highlight_room(room_id)
+            for row in range(self.room_table.rowCount()):
+                item = self.room_table.item(row, 0)
+                if item is not None and item.data(Qt.UserRole) == room_id:
+                    self.room_table.selectRow(row)
+                    self.room_table.scrollToItem(item)
+                    break
 
     def _select_room(self, room):
         assignment = self.assignments.get(room.room_id, "Unassigned")
@@ -1005,8 +1027,8 @@ class CadWorkspace(QWidget):
         self.browser.set_project_state(
             self.document, self.rooms, self.assignments, self.selected_units
         )
-        for index in range(self.room_list.count()):
-            item = self.room_list.item(index)
+        for index in range(self.room_table.rowCount()):
+            item = self.room_table.item(index, 0)
             room_id = item.data(Qt.UserRole)
             if room_id in self.assignments:
-                item.setText(f"{room_id}   ·   {self.assignments[room_id]}")
+                item.setToolTip(f"HAP System: {self.assignments[room_id]}")

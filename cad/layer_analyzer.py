@@ -341,6 +341,11 @@ class LayerMapping:
     def label_layers(self) -> set[str]:
         return self.layers_of(LayerClass.TEXT_LABELS)
 
+    def door_layers(self) -> set[str]:
+        """Layers containing door/opening geometry, case-folded."""
+
+        return self.layers_of(LayerClass.DOORS)
+
     def excluded_layers(self) -> set[str]:
         return self.layers_of(*NON_ROOM_CLASSES)
 

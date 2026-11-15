@@ -7,6 +7,7 @@ import hashlib
 from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
+from statistics import median
 
 from shapely.geometry import LineString, Point, Polygon
 from shapely.ops import polygonize, unary_union
@@ -827,6 +828,32 @@ def detect_spaces(
     return rooms
 
 
+def _door_opening_gap_tolerance(document: CadDocument, door_layers: set[str]) -> float | None:
+    """Estimate a same-unit gap size from explicit door geometry."""
+
+    spans: list[float] = []
+    for entity in document.entities:
+        if entity.layer.casefold() not in door_layers:
+            continue
+        data = entity.data
+        kind = entity.entity_type.upper()
+        if kind == "LINE":
+            start, end = data.get("start"), data.get("end")
+            if start and end:
+                spans.append(math.dist(start, end))
+        elif kind in {"LWPOLYLINE", "POLYLINE"}:
+            points = data.get("points", [])
+            spans.extend(
+                math.dist(left, right)
+                for left, right in zip(points, points[1:])
+                if left != right
+            )
+    spans = [span for span in spans if math.isfinite(span) and span > 0]
+    if not spans:
+        return None
+    return float(median(spans) * 1.05)
+
+
 @dataclass
 class RoomDetectionReport:
     """Result of :func:`detect_spaces_with_review`.
@@ -933,6 +960,7 @@ def detect_spaces_with_review(
     arc_angle_tolerance: float = math.radians(1.0),
     diagnostics: list[dict[str, object]] | None = None,
     include_non_room_layer_candidates: bool = True,
+    _detected_rooms: list[RoomSpace] | None = None,
 ) -> RoomDetectionReport:
     """Detect rooms **and** classify every candidate for human review.
 
@@ -1012,17 +1040,37 @@ def detect_spaces_with_review(
             }
         )
 
-    rooms = detect_spaces(
-        detection_document,
-        include_wall_lines=effective_wall_detection,
-        wall_layers=wall_layers or None,
-        label_layers=label_layers or None,
-        label_tolerance=label_tolerance,
-        tolerance=tolerance,
-        gap_tolerance=gap_tolerance,
-        arc_angle_tolerance=arc_angle_tolerance,
-        diagnostics=collected,
-    )
+    if _detected_rooms is None:
+        effective_gap_tolerance = gap_tolerance
+        if gap_tolerance == 0.0:
+            estimated_gap = _door_opening_gap_tolerance(document, mapping.door_layers())
+            if estimated_gap is not None:
+                effective_gap_tolerance = estimated_gap
+                collected.append(
+                    {
+                        "type": "door_opening_gap_tolerance",
+                        "gap_tolerance": estimated_gap,
+                        "message": (
+                            "Closed wall gaps using the median detected door span "
+                            f"({estimated_gap:.3f} drawing units)."
+                        ),
+                    }
+                )
+        rooms = detect_spaces(
+            detection_document,
+            include_wall_lines=effective_wall_detection,
+            wall_layers=wall_layers or None,
+            label_layers=label_layers or None,
+            label_tolerance=label_tolerance,
+            tolerance=tolerance,
+            gap_tolerance=effective_gap_tolerance,
+            arc_angle_tolerance=arc_angle_tolerance,
+            diagnostics=collected,
+        )
+    else:
+        # Reuse the immutable geometry result produced by the cache. Candidate
+        # status, area scaling and reasons are always recomputed below.
+        rooms = list(_detected_rooms)
 
     units_status, units_note = _units_note(document)
     units_verified = document.units_verified

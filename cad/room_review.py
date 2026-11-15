@@ -38,6 +38,7 @@ Engineering rules enforced here
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -150,6 +151,10 @@ class RoomReviewSession:
     #: ``room_key -> ReviewAction``; only explicit reviewer decisions are stored.
     room_decisions: dict[str, ReviewAction] = field(default_factory=dict)
     report: RoomDetectionReport | None = None
+    #: Geometry is expensive; unit/threshold changes only need candidate re-evaluation.
+    _geometry_cache: dict[tuple[object, ...], list[RoomSpace]] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     # -- construction ----------------------------------------------------
     @classmethod
@@ -166,6 +171,25 @@ class RoomReviewSession:
     def refresh(self) -> "RoomReviewSession":
         """Re-run detection with the current review inputs."""
 
+        geometry_key = (
+            tuple(sorted((str(layer), str(value)) for layer, value in self.layer_overrides.items())),
+            bool(self.allow_circular_curves),
+            bool(self.require_label),
+        )
+        detected_rooms = self._geometry_cache.get(geometry_key)
+        if detected_rooms is None:
+            # Use a zero threshold for the cached geometry pass. The current
+            # threshold and units are applied in the cheap evaluation pass below.
+            geometry_report = detect_spaces_with_review(
+                self.document,
+                layer_overrides=dict(self.layer_overrides),
+                min_area_m2=0.0,
+                allow_circular_curves=self.allow_circular_curves,
+                require_label=self.require_label,
+            )
+            detected_rooms = deepcopy(geometry_report.rooms)
+            self._geometry_cache[geometry_key] = detected_rooms
+
         self.report = detect_spaces_with_review(
             self.document,
             layer_overrides=dict(self.layer_overrides),
@@ -174,6 +198,7 @@ class RoomReviewSession:
             max_area_m2=self.max_area_m2,
             allow_circular_curves=self.allow_circular_curves,
             require_label=self.require_label,
+            _detected_rooms=deepcopy(detected_rooms),
         )
         return self
 
@@ -357,6 +382,35 @@ class RoomReviewSession:
             )
         return rows
 
+    @staticmethod
+    def _is_area_noise(room: RoomSpace) -> bool:
+        """Return whether a blocked candidate is only below the area threshold."""
+
+        return (
+            room.candidate_status == CandidateStatus.REJECTED.value
+            and any(
+                reason.startswith("AREA_BELOW_MINIMUM:")
+                for reason in room.candidate_reasons
+            )
+        )
+
+    @property
+    def hidden_area_candidates(self) -> int:
+        """Number of area-rejected candidates omitted from the review table."""
+
+        return sum(self._is_area_noise(room) for room in self.rooms)
+
+    def review_rows(self) -> list[RoomReviewRow]:
+        """Rows intended for the human-facing table.
+
+        The complete ``rows()`` API remains unchanged for persistence and
+        diagnostics.  The UI uses this filtered view to avoid rendering large
+        drawings' tiny non-room details.
+        """
+
+        hidden = {room.room_id for room in self.rooms if self._is_area_noise(room)}
+        return [row for row in self.rows() if row.room_id not in hidden]
+
     def rooms_with_status(self, *statuses: ReviewStatus) -> list[RoomSpace]:
         wanted = set(statuses)
         return [room for room in self.rooms if self._status_for(room) in wanted]
@@ -419,15 +473,21 @@ class RoomReviewSession:
 
     def status_line(self) -> str:
         counts = self.summary()
-        return (
+        status = (
             f"{counts['total']} candidate(s): "
             f"{counts['AUTO_ACCEPTED']} auto-accepted, "
             f"{counts['ACCEPTED']} accepted, "
             f"{counts['NEEDS_REVIEW']} awaiting review, "
             f"{counts['REJECTED']} rejected by reviewer, "
             f"{counts['BLOCKED']} blocked by rules"
-            + ("" if self.units_verified else " \u2014 units NOT confirmed")
+            + ("" if self.units_verified else " — units NOT confirmed")
         )
+        if self.hidden_area_candidates:
+            status += (
+                f" — {self.hidden_area_candidates} tiny candidate(s) hidden "
+                "because they are below the minimum area"
+            )
+        return status
 
     # -- serialisation (the Project Database link point) ------------------
     def to_dict(self) -> dict[str, Any]:

@@ -111,8 +111,12 @@ class RoomReviewDialog(QDialog):
         self.cmb_units = QComboBox()
         self.cmb_units.setObjectName("cmb_cad_units")
         self.cmb_units.addItem("Not confirmed", None)
+        if self.session.document.units_verified:
+            detected_units = self.session.document.units
+            self.cmb_units.addItem(f"Detected: {detected_units}", detected_units)
         for name in sorted(REVIEWABLE_UNITS):
-            self.cmb_units.addItem(name, name)
+            if self.cmb_units.findData(name) < 0:
+                self.cmb_units.addItem(name, name)
         self.cmb_units.currentIndexChanged.connect(self._on_units_changed)
         controls.addWidget(self.cmb_units)
 
@@ -205,12 +209,16 @@ class RoomReviewDialog(QDialog):
     def _render_header(self) -> None:
         document = self.session.document
         self.lbl_header.setText(
-            f"<b>{document.path.name}</b> \u2014 {len(document.layers)} layer(s), "
+            f"<b>{document.path.name}</b> — {len(document.layers)} layer(s), "
             f"{document.entity_count} entity/entities.<br>"
+            f"Detected drawing units: <b>{self.session.units_label}</b>. "
             "Nothing is promoted to a room automatically. Every candidate below is "
             "either confirmed by the rules, waiting for your decision, or blocked with a reason."
         )
-        index = self.cmb_units.findData(self.session.units_override)
+        selected_units = self.session.units_override
+        if selected_units is None and self.session.document.units_verified:
+            selected_units = self.session.document.units
+        index = self.cmb_units.findData(selected_units)
         self.cmb_units.blockSignals(True)
         self.cmb_units.setCurrentIndex(index if index >= 0 else 0)
         self.cmb_units.blockSignals(False)
@@ -249,7 +257,7 @@ class RoomReviewDialog(QDialog):
         self.tbl_layers.resizeColumnsToContents()
 
     def _render_rooms(self) -> None:
-        rows = self.session.rows()
+        rows = self.session.review_rows()
         self.tbl_rooms.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
             area_text = "\u2014" if row.area_m2 is None else f"{row.area_m2:,.2f}"
@@ -313,7 +321,7 @@ class RoomReviewDialog(QDialog):
             "No candidates are awaiting review; blocked candidates cannot be accepted."
         )
         self.btn_reject_all.setEnabled(pending and not self._refreshing)
-        self.btn_apply.setEnabled(bool(self.session.accepted_rooms))
+        self.btn_apply.setEnabled(bool(self.session.usable_rooms))
         if blockers:
             self.btn_apply.setToolTip("\n".join(blockers))
         else:

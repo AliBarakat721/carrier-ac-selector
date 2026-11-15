@@ -65,6 +65,42 @@ def test_dialog_shows_one_row_per_candidate_and_per_layer(app, tmp_path):
     assert "blocked by rules" in dialog.lbl_status.text()
 
 
+def test_dialog_hides_area_only_noise_but_keeps_auditable_session_rows(app, tmp_path):
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    drawing.layers.new("A-WALL")
+    modelspace = drawing.modelspace()
+    modelspace.add_lwpolyline(
+        [(0, 0), (5, 0), (5, 4), (0, 4)],
+        close=True,
+        dxfattribs={"layer": "A-WALL"},
+    )
+    modelspace.add_lwpolyline(
+        [(10, 0), (10.1, 0), (10.1, 0.1), (10, 0.1)],
+        close=True,
+        dxfattribs={"layer": "A-WALL"},
+    )
+    path = tmp_path / "tiny-detail.dxf"
+    drawing.saveas(path)
+
+    session = RoomReviewSession.from_path(path)
+    dialog = RoomReviewDialog(session)
+
+    assert len(session.rooms) == 2
+    assert session.hidden_area_candidates == 1
+    assert dialog.tbl_rooms.rowCount() == 1
+    assert "1 tiny candidate(s) hidden" in dialog.lbl_status.text()
+
+
+def test_dialog_exposes_detected_units_without_manual_confirmation(app, tmp_path):
+    session = RoomReviewSession.from_path(_plan(tmp_path / "inches.dxf", units=1))
+    dialog = RoomReviewDialog(session)
+
+    assert session.units_verified is True
+    assert dialog.cmb_units.currentData() == "inches"
+    assert "Detected drawing units: <b>inches</b>" in dialog.lbl_header.text()
+
+
 def test_apply_is_disabled_when_nothing_is_accepted(app, tmp_path):
     session = RoomReviewSession.from_path(_plan(tmp_path / "plan.dxf", units=0))
 

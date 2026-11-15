@@ -105,6 +105,19 @@ def test_status_line_and_summary_count_every_candidate(tmp_path):
     assert "units NOT confirmed" not in session.status_line()
 
 
+def test_unit_and_threshold_changes_reuse_geometry_cache(tmp_path):
+    session = RoomReviewSession.from_path(_plan(tmp_path / "cached.dxf"))
+
+    assert len(session._geometry_cache) == 1
+    room_ids = [room.room_id for room in session.rooms]
+
+    session.set_min_area_m2(0.25)
+    session.set_units("meters")
+
+    assert len(session._geometry_cache) == 1
+    assert [room.room_id for room in session.rooms] == room_ids
+
+
 def test_unverified_units_make_every_room_unusable(tmp_path):
     session = RoomReviewSession.from_path(_plan(tmp_path / "plan.dxf", units=0))
 

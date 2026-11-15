@@ -41,12 +41,13 @@ function Test-UpdateArchive([string]$ZipPath) {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $allowedRoot = @(
         "main.py", "core.py", "ocr_engine.py", "electrical_engine.py",
-        "roi_tab.py", "updater.py", "version.py", "apply_update.ps1",
+        "roi_tab.py", "logging_setup.py", "room_review_dialog.py", "units.py",
+        "updater.py", "version.py", "apply_update.ps1",
         "Start_Carrier.bat", "setup.ps1", "run.ps1", "test.ps1",
         "requirements.txt", "requirements-dev.txt", "README.md"
     )
     $allowedData = @("Carrier_AC_Database.xlsx", "Carrier_AC_Database.csv")
-    $allowedPackageDirs = @("cad", "engineering", "equipment", "hap", "integration", "reports", "ui")
+    $allowedPackageDirs = @("cad", "engineering", "hap", "integration", "reports", "ui")
     $required = @("main.py", "core.py", "requirements.txt", "updater.py", "version.py", "apply_update.ps1")
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     $found = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)

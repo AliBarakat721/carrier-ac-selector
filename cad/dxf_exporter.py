@@ -113,6 +113,29 @@ def apply_cad_document_edits(document: object, cad_document: object) -> None:
             )
 
 
+def save_cad_document(
+    source: str | Path,
+    output: str | Path,
+    *,
+    cad_document: object,
+    raw_dxf_document: object | None = None,
+) -> Path:
+    """Save the edited CAD model without modifying the original source file."""
+    document = prepare_export_document(
+        raw_dxf_document if raw_dxf_document is not None else source
+    )
+    apply_cad_document_edits(document, cad_document)
+    destination = Path(output)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        document.saveas(temporary)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return destination
+
+
 def _attribute_values(reference: object) -> dict[str, str]:
     return {
         attribute.dxf.tag: str(attribute.dxf.text)

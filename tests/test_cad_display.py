@@ -12,9 +12,9 @@ from shapely.geometry import Polygon
 
 pytest.importorskip("PySide6")
 from PySide6.QtCore import QCoreApplication, QEvent, Qt
-from PySide6.QtWidgets import QApplication, QGraphicsSimpleTextItem
+from PySide6.QtWidgets import QApplication, QGraphicsPathItem, QGraphicsSimpleTextItem
 
-from cad.dxf_reader import read_dxf
+from cad.dxf_reader import CadDocument, CadEntity, read_dxf
 from ui.cad_workspace import CadWorkspace
 
 
@@ -87,3 +87,31 @@ def test_architectural_plan_fits_proportionally_and_preserves_annotation(
     workspace.close()
     workspace.deleteLater()
     app.processEvents()
+
+
+def test_hatch_and_bulge_entities_are_rendered(app):
+    workspace = CadWorkspace(Path(__file__).resolve().parents[1])
+    document = CadDocument(
+        Path("sample.dxf"), "meters", 6, ["A-WALL", "A-HATCH"],
+        [
+            CadEntity(
+                "LWPOLYLINE", "A-WALL", "1",
+                {"points": [(0, 0), (10, 0)], "bulges": [1.0, 0.0], "closed": False},
+            ),
+            CadEntity(
+                "HATCH", "A-HATCH", "2",
+                {"solid_fill": True, "paths": [{
+                    "points": [(0, 0), (4, 0), (4, 3), (0, 3)],
+                    "bulges": [0, 0, 0, 0], "closed": True,
+                }]},
+            ),
+        ],
+    )
+    workspace.viewport.render_document(document, [])
+    path_items = [
+        item for item in workspace.viewport.scene.items()
+        if isinstance(item, QGraphicsPathItem)
+    ]
+    assert len(path_items) == 2
+    assert all(not item.path().isEmpty() for item in path_items)
+    workspace.close()

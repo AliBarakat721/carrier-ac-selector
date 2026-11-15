@@ -42,7 +42,7 @@ import pandas as pd
 import core
 import ocr_engine
 import updater
-from cad.dxf_exporter import export_hvac_dxf
+from cad.dxf_exporter import export_hvac_dxf, save_cad_document
 from cad.importer import read_cad_file_with_raw
 from cad.room_review import RoomReviewSession
 from cad.parallel_tasks import detect_rooms_task, summarize_document_task
@@ -1106,6 +1106,8 @@ class HAPToCarrierApp(QMainWindow):
         self.cad_review_session = None   # RoomReviewSession for the loaded drawing
         self.cad_workspace_tab = None
         self.cad_raw_dxf = None
+        self.cad_save_path = None
+        self.cad_dirty = False
 
         self._build_ui()
         self.setAcceptDrops(True)
@@ -1281,6 +1283,9 @@ class HAPToCarrierApp(QMainWindow):
         self.cad_workspace.request_open.connect(self.upload_cad)
         self.cad_workspace.request_export.connect(self.export_cad_workflow)
         self.cad_workspace.geometry_changed.connect(self._on_cad_geometry_changed)
+        self.cad_workspace.request_save.connect(self.save_cad)
+        self.cad_workspace.request_save_as.connect(self.save_cad_as)
+        self.cad_workspace.dirty_changed.connect(self._set_cad_dirty)
         self.workspace_tabs.addTab(self.cad_workspace, "CAD Workspace")
 
         self.selection_workspace = SelectionWorkspace(Path(self._app_dir))
@@ -2163,6 +2168,8 @@ class HAPToCarrierApp(QMainWindow):
         self.cad_source_path = path
         self.cad_document = document
         self.cad_raw_dxf = raw_dxf_document
+        self.cad_save_path = None
+        self._set_cad_dirty(False)
         self.cad_room_systems.clear()
         self.cad_room_loads.clear()
         self.cad_room_selections.clear()
@@ -2199,6 +2206,49 @@ class HAPToCarrierApp(QMainWindow):
                 "CAD Recalculation Error",
                 f"CAD geometry was edited, but room detection failed:\n\n{exc}",
             )
+
+    def _set_cad_dirty(self, dirty: bool) -> None:
+        self.cad_dirty = bool(dirty)
+        if hasattr(self, "cad_workspace"):
+            self.cad_workspace.save_button.setEnabled(self.cad_document is not None)
+        marker = "*" if self.cad_dirty else ""
+        self.setWindowTitle(f"Carrier AC Selector{marker}")
+
+    def save_cad(self) -> None:
+        """Save the edited CAD to a safe sibling file, never over the source."""
+        if self.cad_document is None or not self.cad_source_path:
+            QMessageBox.information(self, "No CAD File", "Import a CAD drawing first.")
+            return
+        if self.cad_save_path is None:
+            self.save_cad_as()
+            return
+        try:
+            save_cad_document(
+                self.cad_source_path,
+                self.cad_save_path,
+                cad_document=self.cad_document,
+                raw_dxf_document=self.cad_raw_dxf,
+            )
+            self.cad_dirty = False
+            self._set_cad_dirty(False)
+            self._set_status(f"CAD saved to {self.cad_save_path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "CAD Save Error", str(exc))
+
+    def save_cad_as(self) -> None:
+        if self.cad_document is None or not self.cad_source_path:
+            QMessageBox.information(self, "No CAD File", "Import a CAD drawing first.")
+            return
+        default = str(Path(self.cad_source_path).with_name(
+            Path(self.cad_source_path).stem + "_edited.dxf"
+        ))
+        output, _ = QFileDialog.getSaveFileName(
+            self, "Save Edited CAD As", default, "DXF Files (*.dxf)"
+        )
+        if not output:
+            return
+        self.cad_save_path = Path(output)
+        self.save_cad()
 
     def _on_cad_error(self, job_id: int, message: str):
         if job_id != self._cad_job_id:
@@ -4357,6 +4407,22 @@ class HAPToCarrierApp(QMainWindow):
 
     def closeEvent(self, event):
         """Stop the OCR thread cleanly so Qt doesn't abort on shutdown."""
+        if self.cad_dirty:
+            answer = QMessageBox.question(
+                self,
+                "Unsaved CAD Changes",
+                "The CAD drawing has unsaved changes. Save before closing?",
+                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+                QMessageBox.Save,
+            )
+            if answer == QMessageBox.Cancel:
+                event.ignore()
+                return
+            if answer == QMessageBox.Save:
+                self.save_cad()
+                if self.cad_dirty:
+                    event.ignore()
+                    return
         w = getattr(self, "ocr_worker", None)
         if w is not None and w.isRunning():
             for sig in (w.done, w.error, w.progress):

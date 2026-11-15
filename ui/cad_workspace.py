@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 from shapely.geometry import Point
 from cad.dxf_reader import CadEntity
+from cad.space_detector import _bulged_points
 
 
 PALETTE = {
@@ -260,6 +261,16 @@ class CadViewport(QGraphicsView):
             elif kind in {"LWPOLYLINE", "POLYLINE", "SPLINE", "SOLID"}:
                 points = data.get("points", [])
                 if len(points) > 1:
+                    if kind in {"LWPOLYLINE", "POLYLINE"} and any(
+                        abs(float(value)) > 1e-12
+                        for value in data.get("bulges", [])
+                    ):
+                        points = _bulged_points(
+                            points,
+                            [float(value) for value in data.get("bulges", [])],
+                            bool(data.get("closed")),
+                            math.radians(2.0),
+                        )
                     path = QPainterPath()
                     path.moveTo(float(points[0][0]), -float(points[0][1]))
                     for x, y in points[1:]:
@@ -267,6 +278,36 @@ class CadViewport(QGraphicsView):
                     if data.get("closed"):
                         path.closeSubpath()
                     item = self.scene.addPath(path, pen, brush if data.get("closed") else QBrush(Qt.NoBrush))
+                    self._register(item, layer, entity)
+            elif kind == "HATCH":
+                path = QPainterPath()
+                path.setFillRule(Qt.OddEvenFill)
+                has_ring = False
+                for ring in data.get("paths", []):
+                    if not ring.get("closed"):
+                        continue
+                    points = ring.get("points", [])
+                    if len(points) < 3:
+                        continue
+                    bulges = ring.get("bulges", [])
+                    if any(abs(float(value)) > 1e-12 for value in bulges):
+                        points = _bulged_points(
+                            points,
+                            [float(value) for value in bulges],
+                            True,
+                            math.radians(2.0),
+                        )
+                    path.moveTo(float(points[0][0]), -float(points[0][1]))
+                    for x, y in points[1:]:
+                        path.lineTo(float(x), -float(y))
+                    path.closeSubpath()
+                    has_ring = True
+                if has_ring:
+                    item = self.scene.addPath(
+                        path,
+                        pen,
+                        brush if data.get("solid_fill") else QBrush(Qt.NoBrush),
+                    )
                     self._register(item, layer, entity)
             elif kind == "CIRCLE":
                 center = data.get("center")
@@ -688,7 +729,10 @@ class CadWorkspace(QWidget):
     room_selected = Signal(object)
     request_open = Signal()
     request_export = Signal()
+    request_save = Signal()
+    request_save_as = Signal()
     geometry_changed = Signal(object)
+    dirty_changed = Signal(bool)
 
     def __init__(self, project_root: Path, parent=None):
         super().__init__(parent)
@@ -698,6 +742,7 @@ class CadWorkspace(QWidget):
         self.rooms = []
         self.assignments = {}
         self.selected_units = {}
+        self.cad_dirty = False
         self.browser = ProjectBrowser()
         self.viewport = CadViewport(project_root)
         self.properties = PropertiesInspector()
@@ -739,6 +784,13 @@ class CadWorkspace(QWidget):
         self.export_button.setObjectName("btn_success")
         self.export_button.clicked.connect(self.request_export.emit)
         row.addWidget(self.export_button)
+        self.save_button = QPushButton("Save CAD")
+        self.save_button.setIcon(_icon(self.project_root, "save"))
+        self.save_button.clicked.connect(self.request_save.emit)
+        row.addWidget(self.save_button)
+        self.save_as_button = QPushButton("Save As")
+        self.save_as_button.clicked.connect(self.request_save_as.emit)
+        row.addWidget(self.save_as_button)
         toolbar_layout.addLayout(row)
         tool_row = QHBoxLayout()
         tool_row.setContentsMargins(0, 0, 0, 0)
@@ -754,6 +806,7 @@ class CadWorkspace(QWidget):
             ("scale", "Scale", "scale"),
             ("delete", "Delete", "delete"),
             ("undo", "Undo", "undo"),
+            ("redo", "Redo", "redo"),
             ("select", "Select", "cursor"),
         ):
             tool = QPushButton(label)
@@ -765,9 +818,11 @@ class CadWorkspace(QWidget):
             tool.setProperty("icon_name", icon_name)
             tool.setIconSize(QSize(16, 16))
             tool.setToolTip(label)
-            if mode == "undo":
+            if mode in {"undo", "redo"}:
                 tool.setCheckable(False)
-                tool.clicked.connect(self._undo_edit)
+                tool.clicked.connect(
+                    self._undo_edit if mode == "undo" else self._redo_edit
+                )
             elif mode in {"rotate", "scale"}:
                 tool.setCheckable(True)
                 tool.clicked.connect(lambda _checked=False, value=mode: self._request_transform(value))
@@ -812,11 +867,17 @@ class CadWorkspace(QWidget):
         self.browser.room_clicked.connect(self._select_room_by_id)
         self.browser.layer_toggled.connect(self.viewport.set_layer_visible)
         self._edit_history = []
+        self._redo_history = []
+
+    def _mark_dirty(self):
+        if not self.cad_dirty:
+            self.cad_dirty = True
+            self.dirty_changed.emit(True)
 
     def _activate_tool(self, mode: str):
         self.viewport.set_mode(mode)
         for name, button in self.tool_buttons.items():
-            if name != "undo":
+            if name not in {"undo", "redo"}:
                 button.setChecked(name == mode)
 
     def _request_transform(self, mode: str):
@@ -835,7 +896,7 @@ class CadWorkspace(QWidget):
             self._activate_tool(mode)
         else:
             for name, button in self.tool_buttons.items():
-                if name != "undo":
+                if name not in {"undo", "redo"}:
                     button.setChecked(name == self.viewport._mode)
 
     def _transform_entity(self, entity, mode: str, value: float):
@@ -883,6 +944,7 @@ class CadWorkspace(QWidget):
     def _remember_entities(self):
         if self.document is not None:
             self._edit_history.append(list(self.document.entities))
+            self._redo_history.clear()
 
     def _refresh_after_edit(self):
         self.viewport.render_document(self.document, self.rooms)
@@ -893,6 +955,7 @@ class CadWorkspace(QWidget):
             self.selected_units,
         )
         self.geometry_changed.emit(self.document)
+        self._mark_dirty()
 
     def _add_entity(self, entity):
         if self.document is None:
@@ -934,9 +997,19 @@ class CadWorkspace(QWidget):
         if self.document is None or not self._edit_history:
             self.status.setText("Nothing to undo")
             return
+        self._redo_history.append(list(self.document.entities))
         self.document.entities[:] = self._edit_history.pop()
         self._refresh_after_edit()
         self.status.setText("Last CAD edit undone")
+
+    def _redo_edit(self):
+        if self.document is None or not self._redo_history:
+            self.status.setText("Nothing to redo")
+            return
+        self._edit_history.append(list(self.document.entities))
+        self.document.entities[:] = self._redo_history.pop()
+        self._refresh_after_edit()
+        self.status.setText("Last CAD edit redone")
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -947,7 +1020,8 @@ class CadWorkspace(QWidget):
         compact = width < 980
         self.workspace_title.setVisible(width >= 700)
         self.status.setVisible(width >= 700)
-        self.fit_button.setText("Fit" if compact else "Fit view")
+        self.save_button.setText("Save" if compact else "Save CAD")
+        self.save_as_button.setText("Save As" if not compact else "Save As")
         self.open_button.setText("Import" if compact else "Import DWG / DXF")
         self.export_button.setText("Export" if compact else "Export HVAC DXF")
         for mode, button in self.tool_buttons.items():
@@ -955,6 +1029,7 @@ class CadWorkspace(QWidget):
                 "line": "Draw line", "rectangle": "Rectangle", "circle": "Circle",
                 "move": "Move", "rotate": "Rotate", "scale": "Scale",
                 "delete": "Delete", "undo": "Undo", "select": "Select",
+                "redo": "Redo",
             }[mode])
 
     def set_project_data(self, document, rooms, assignments=None, selected_units=None):
@@ -962,6 +1037,10 @@ class CadWorkspace(QWidget):
         self.rooms = list(rooms or [])
         self.assignments = dict(assignments or {})
         self.selected_units = selected_units or {}
+        self.cad_dirty = False
+        self._edit_history.clear()
+        self._redo_history.clear()
+        self.dirty_changed.emit(False)
         self.viewport.render_document_incremental(
             document,
             self.rooms,

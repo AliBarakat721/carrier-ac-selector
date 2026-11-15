@@ -14,7 +14,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from cad.dxf_reader import CadDocument, CadEntity
-from cad.dxf_exporter import apply_cad_document_edits
+from cad.dxf_exporter import apply_cad_document_edits, save_cad_document
 from ui.cad_workspace import CadWorkspace
 
 _TEST_WORKSPACES = []
@@ -144,3 +144,44 @@ def test_in_memory_cad_edits_are_applied_to_export_document(tmp_path):
     assert tuple(lines[0].dxf.start)[:2] == (2, 3)
     assert tuple(lines[0].dxf.end)[:2] == (4, 3)
     assert tuple(circles[0].dxf.center)[:2] == (8, 8)
+
+
+def test_redo_restores_an_undone_cad_edit(app):
+    workspace = _workspace(app)
+    document = CadDocument(Path("sample.dxf"), "meters", 6, ["0"], [])
+    workspace.set_project_data(document, [])
+    workspace._add_entity(
+        CadEntity("LINE", "MANUS_DRAWN", None, {"start": (0, 0), "end": (10, 0)})
+    )
+    assert len(document.entities) == 1
+    workspace._undo_edit()
+    assert document.entities == []
+    workspace._redo_edit()
+    assert len(document.entities) == 1
+    assert document.entities[0].entity_type == "LINE"
+
+
+def test_save_cad_document_writes_edited_geometry(tmp_path):
+    import ezdxf
+
+    source = tmp_path / "source.dxf"
+    output = tmp_path / "edited.dxf"
+    drawing = ezdxf.new("R2018")
+    original = drawing.modelspace().add_line((0, 0), (1, 0))
+    drawing.saveas(source)
+    edited = CadDocument(
+        source,
+        "meters",
+        6,
+        ["0", "MANUS_DRAWN"],
+        [
+            CadEntity("LINE", "0", original.dxf.handle, {"start": (0, 0), "end": (1, 0)}),
+            CadEntity("LINE", "MANUS_DRAWN", None, {"start": (3, 4), "end": (7, 4)}),
+        ],
+    )
+
+    save_cad_document(source, output, cad_document=edited)
+    saved = ezdxf.readfile(output)
+    lines = list(saved.modelspace().query("LINE"))
+    assert len(lines) == 2
+    assert any(tuple(line.dxf.start)[:2] == (3, 4) for line in lines)

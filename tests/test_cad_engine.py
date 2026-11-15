@@ -45,6 +45,57 @@ def test_read_dxf_extracts_units_layers_and_entities(tmp_path):
     assert len(document.entities_of_type("LINE")) == 4
 
 
+def test_unsupported_entity_is_retained_as_raw_only_with_a_diagnostic(tmp_path):
+    source = tmp_path / "unsupported-entity.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.modelspace().add_xline((0, 0), (1, 1), dxfattribs={"layer": "REFERENCE"})
+    drawing.saveas(source)
+
+    document = read_dxf(source)
+
+    assert len(document.entities_of_type("XLINE")) == 1
+    assert document.entities_of_type("XLINE")[0].data == {}
+    assert any("XLINE" in diagnostic and "original drawing" in diagnostic for diagnostic in document.diagnostics)
+    assert len(ezdxf.readfile(source).modelspace().query("XLINE")) == 1
+
+
+def test_deep_block_nesting_is_reported_without_aborting_dxf_import(tmp_path):
+    source = tmp_path / "deep-block.dxf"
+    drawing = ezdxf.new("R2018")
+    for index in range(36):
+        block = drawing.blocks.new(f"NEST-{index}")
+        if index < 35:
+            block.add_blockref(f"NEST-{index + 1}", (0, 0))
+        else:
+            block.add_lwpolyline([(0, 0), (5, 0), (5, 4), (0, 4)], close=True)
+    drawing.modelspace().add_blockref("NEST-0", (0, 0))
+    drawing.saveas(source)
+
+    document = read_dxf(source)
+
+    assert document.entities_of_type("INSERT")
+    assert any("nesting exceeds 32" in diagnostic.lower() for diagnostic in document.diagnostics)
+
+
+def test_unexpandable_insert_is_kept_with_a_diagnostic(tmp_path, monkeypatch):
+    from ezdxf.entities import Insert
+
+    source = tmp_path / "unexpandable-block.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.blocks.new("BROKEN-BLOCK").add_line((0, 0), (1, 0))
+    drawing.modelspace().add_blockref("BROKEN-BLOCK", (0, 0))
+    drawing.saveas(source)
+
+    def fail_expansion(self, *args, **kwargs):
+        raise RuntimeError("synthetic expansion failure")
+
+    monkeypatch.setattr(Insert, "virtual_entities", fail_expansion)
+    document = read_dxf(source)
+
+    assert document.entities_of_type("INSERT")
+    assert any("synthetic expansion failure" in diagnostic for diagnostic in document.diagnostics)
+
+
 def test_solid_quadrilateral_is_read_in_polygon_order_and_detected(tmp_path):
     source = tmp_path / "solid-quad.dxf"
     drawing = ezdxf.new("R2018")

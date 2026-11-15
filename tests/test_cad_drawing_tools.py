@@ -185,3 +185,35 @@ def test_save_cad_document_writes_edited_geometry(tmp_path):
     lines = list(saved.modelspace().query("LINE"))
     assert len(lines) == 2
     assert any(tuple(line.dxf.start)[:2] == (3, 4) for line in lines)
+
+
+def test_export_preserves_unsupported_raw_entities_during_supported_edits(tmp_path):
+    import ezdxf
+
+    from cad.dxf_reader import read_dxf
+
+    source = tmp_path / "source-with-xline.dxf"
+    output = tmp_path / "edited-with-xline.dxf"
+    drawing = ezdxf.new("R2018")
+    original_line = drawing.modelspace().add_line((0, 0), (1, 0))
+    original_xline = drawing.modelspace().add_xline((2, 3), (1, 1))
+    drawing.saveas(source)
+    raw = ezdxf.readfile(source)
+    neutral = read_dxf(source, drawing=raw)
+    neutral.entities = [
+        CadEntity(
+            entity.entity_type,
+            entity.layer,
+            entity.handle,
+            {"start": (0, 0), "end": (4, 0)} if entity.handle == original_line.dxf.handle else entity.data,
+            entity.source_insert_handles,
+        )
+        for entity in neutral.entities
+    ]
+
+    save_cad_document(source, output, cad_document=neutral, raw_dxf_document=raw)
+    saved = ezdxf.readfile(output)
+
+    assert len(saved.modelspace().query("XLINE")) == 1
+    assert saved.modelspace().query("XLINE")[0].dxf.handle == original_xline.dxf.handle
+    assert tuple(saved.modelspace().query("LINE")[0].dxf.end)[:2] == (4, 0)

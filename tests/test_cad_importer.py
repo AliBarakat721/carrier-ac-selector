@@ -17,6 +17,27 @@ def test_dxf_is_read_directly_without_oda(tmp_path, monkeypatch):
     assert importer.read_cad_file(source) is expected
 
 
+def test_raw_dxf_import_reads_source_once(tmp_path, monkeypatch):
+    source = tmp_path / "plan.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.layers.new("A-WALL")
+    drawing.modelspace().add_line((0, 0), (5, 0), dxfattribs={"layer": "A-WALL"})
+    drawing.saveas(source)
+    real_readfile = ezdxf.readfile
+    reads = []
+
+    def counted_readfile(path):
+        reads.append(Path(path))
+        return real_readfile(path)
+
+    monkeypatch.setattr(ezdxf, "readfile", counted_readfile)
+    neutral, raw = importer.read_cad_file_with_raw(source)
+
+    assert reads == [source]
+    assert neutral.entities_of_type("LINE")
+    assert len(raw.modelspace().query("LINE")) == 1
+
+
 def test_explicit_converter_path_is_written_to_ezdxf_options(tmp_path, monkeypatch, request):
     source = tmp_path / "office plan.dwg"
     source.write_bytes(b"DWG fixture")

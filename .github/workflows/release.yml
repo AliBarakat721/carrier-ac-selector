@@ -52,7 +52,7 @@ jobs:
             $files = @(Get-ChildItem -Path $packageDirs -Filter *.py -File -Recurse |
               ForEach-Object { $_.FullName })
           }
-          python -m py_compile core.py main.py electrical_engine.py logging_setup.py ocr_engine.py room_review_dialog.py roi_tab.py units.py updater.py version.py $files
+          python -m py_compile core.py main.py electrical_engine.py logging_setup.py ocr_engine.py project_store.py room_review_dialog.py roi_tab.py units.py updater.py version.py $files
           if ($LASTEXITCODE -ne 0) { throw "Python compilation failed." }
           python -m pytest -q
           if ($LASTEXITCODE -ne 0) { throw "Tests failed; refusing to publish this release." }
@@ -83,7 +83,7 @@ jobs:
             "roi_tab.py", "updater.py", "version.py", "apply_update.ps1",
             "logging_setup.py", "room_review_dialog.py", "units.py",
             "Start_Carrier.bat", "setup.ps1", "run.ps1", "test.ps1",
-            "requirements.txt", "requirements-dev.txt", "README.md"
+            "requirements.txt", "requirements-dev.txt", "README.md", "project_store.py"
           )
           $stage = Join-Path $env:RUNNER_TEMP "carrier-release"
           New-Item -ItemType Directory -Path $stage -Force | Out-Null

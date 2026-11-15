@@ -52,6 +52,7 @@ from cad.validation import validate_cad_design
 from integration.models import RoomLoadInput
 from integration.hap_zone_parser import HAPZoneSpaceData, parse_hap_zone_summaries
 from integration.selection_adapter import select_for_room
+from project_store import ProjectStore, ProjectStoreError
 from version import APP_VERSION
 from logging_setup import configure_logging, default_log_path
 import math
@@ -165,6 +166,7 @@ from PySide6.QtWidgets import (
     QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox, QGridLayout, QSplitter, QGroupBox,
     QStatusBar, QTextEdit, QTabWidget, QLineEdit, QProgressBar, QMenu,
     QAbstractItemView, QScrollArea, QFrame,
+    QInputDialog,
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtGui import (QPixmap, QColor, QFont, QBrush, QImage,
@@ -1110,6 +1112,9 @@ class HAPToCarrierApp(QMainWindow):
         self.cad_raw_dxf = None
         self.cad_save_path = None
         self.cad_dirty = False
+        self.project_store: ProjectStore | None = None
+        self._pending_project_restore: dict | None = None
+        self._project_restore_hap_state: dict | None = None
 
         self._build_ui()
         self.setAcceptDrops(True)
@@ -1208,10 +1213,190 @@ class HAPToCarrierApp(QMainWindow):
     # ──────────────────────────────────────────────────────────────
     # UI Construction
     # ──────────────────────────────────────────────────────────────
+    def new_project(self):
+        if self.project_store and not self.save_project(silent=True):
+            QMessageBox.warning(self, "Project Not Saved", "The current project could not be saved; the new project was not created.")
+            return
+        parent = QFileDialog.getExistingDirectory(self, "Choose a parent folder for the project")
+        if not parent:
+            return
+        name, accepted = QInputDialog.getText(self, "New Project", "Project name:")
+        if not accepted or not name.strip():
+            return
+        safe_name = re.sub(r"[^\w .-]+", "_", name.strip(), flags=re.UNICODE).strip(" .")
+        if not safe_name:
+            QMessageBox.warning(self, "Invalid Project Name", "Enter a valid project name.")
+            return
+        try:
+            self.project_store = ProjectStore.create(Path(parent) / safe_name, name.strip())
+            self.project_store.update_state(self._project_snapshot())
+            self._set_cad_dirty(self.cad_dirty)
+            self.setWindowTitle(f"Carrier AC Selector — {self.project_store.name}")
+            self._set_status(f"Project created: {self.project_store.root}")
+            if self.cad_source_path or self.hap_source_path:
+                self.save_project(silent=True)
+        except (OSError, ProjectStoreError) as exc:
+            QMessageBox.critical(self, "Project Creation Failed", str(exc))
+
+    def open_project(self):
+        folder = QFileDialog.getExistingDirectory(self, "Open Carrier AC Selector Project")
+        if not folder:
+            return
+        if self.cad_dirty and not self._confirm_cad_replacement():
+            return
+        if self.project_store and not self.save_project(silent=True):
+            QMessageBox.warning(self, "Project Not Saved", "Save the current project before opening another one.")
+            return
+        try:
+            store = ProjectStore.open(folder)
+            state = store.state
+            self.project_store = store
+            self._pending_project_restore = state
+            cad_path = store.asset("cad_working") or store.asset("cad_original")
+            hap_path = store.asset("hap_source")
+            self._project_restore_hap_state = state if hap_path else None
+            self.setWindowTitle(f"Carrier AC Selector — {store.name}")
+            self._set_status(f"Opening project {store.name}…")
+            if hap_path:
+                self._load_report(str(hap_path))
+            if cad_path:
+                self._load_cad(str(cad_path), skip_unsaved_prompt=True)
+            elif not hap_path:
+                QMessageBox.information(self, "Empty Project", "This project has no CAD or HAP source files yet.")
+        except (OSError, ProjectStoreError, ValueError) as exc:
+            self.project_store = None
+            self._pending_project_restore = None
+            QMessageBox.critical(self, "Could Not Open Project", str(exc))
+
+    def _project_snapshot(self) -> dict:
+        selected_units = {}
+        for name, entry in self.selected_units.items():
+            selected_units[str(name)] = {
+                **dict(entry),
+                "row": entry.get("row").to_dict() if hasattr(entry.get("row"), "to_dict") else entry.get("row", {}),
+            }
+        return {
+            "room_review": self.cad_review_session.to_dict() if self.cad_review_session else {},
+            "room_systems": self.cad_room_systems,
+            "room_loads": self.cad_room_loads,
+            "room_selections": self.cad_room_selections,
+            "room_verified": sorted(self.cad_room_verified),
+            "selected_units": selected_units,
+            "current_system_name": self.current_system_name,
+            "current_btu": self.current_btu,
+            "current_cfm": self.current_cfm,
+            "current_sensible": self.current_sensible,
+        }
+
+    def _restore_project_cart(self, saved_cart: dict) -> None:
+        restored = {}
+        for name, entry in (saved_cart or {}).items():
+            if not isinstance(entry, dict):
+                continue
+            record = dict(entry)
+            row = record.get("row")
+            if isinstance(row, dict):
+                record["row"] = pd.Series(row)
+            required = {
+                "Cooling Capacity (Btu/hr)", "High CFM (numeric)", "EER (Btu/Wh)",
+                "Category", "Series", "System Model", "Indoor Unit Model",
+                "Outdoor Unit Model", "Type", "Power Supply",
+            }
+            if not isinstance(record.get("row"), pd.Series) or not required.issubset(record["row"].index):
+                logger.warning("Skipping incomplete saved equipment row for %s", name)
+                continue
+            try:
+                record["units"] = max(1, int(record.get("units", 1)))
+            except (TypeError, ValueError):
+                logger.warning("Skipping saved equipment row with invalid unit count for %s", name)
+                continue
+            restored[str(name)] = record
+        self.selected_units = restored
+        if hasattr(self, "selection_workspace"):
+            self.selection_workspace.set_selected_units(restored)
+        if hasattr(self, "table_selected"):
+            self._render_selected_table()
+
+    def save_project(self, silent: bool = False) -> bool:
+        store = self.project_store
+        if store is None:
+            if silent:
+                return False
+            QMessageBox.information(self, "No Project", "Create or open a project before saving project data.")
+            return False
+        try:
+            if self.cad_source_path and self.cad_document is not None:
+                source = Path(self.cad_source_path).expanduser().resolve()
+                try:
+                    source.relative_to(store.root)
+                except ValueError:
+                    owned = store.add_source("cad", source)
+                    self.cad_source_path = str(owned)
+                if self.cad_raw_dxf is not None:
+                    staging = store.root / "cad" / f".working-save-{os.getpid()}-{time.time_ns()}.dxf"
+                    try:
+                        save_cad_document(
+                            self.cad_source_path, staging,
+                            cad_document=self.cad_document,
+                            raw_dxf_document=self.cad_raw_dxf,
+                        )
+                        store.commit_working_dxf(staging)
+                    finally:
+                        staging.unlink(missing_ok=True)
+            if self.hap_source_path:
+                source = Path(self.hap_source_path).expanduser().resolve()
+                try:
+                    source.relative_to(store.root)
+                except ValueError:
+                    owned = store.add_source("hap", source)
+                    self.hap_source_path = str(owned)
+            store.update_state(self._project_snapshot())
+            self.cad_dirty = False
+            self._set_cad_dirty(False)
+            self._set_status(f"Project saved: {store.root}")
+            return True
+        except Exception as exc:
+            logger.exception("Project save failed")
+            if not silent:
+                QMessageBox.critical(self, "Project Save Failed", str(exc))
+            return False
+
+    def _confirm_cad_replacement(self) -> bool:
+        project_dirty = bool(
+            self.project_store
+            and ProjectStore.normalize(self._project_snapshot()) != self.project_store.state
+        )
+        if not self.cad_dirty and not project_dirty:
+            return True
+        answer = QMessageBox.question(
+            self, "Unsaved CAD Changes",
+            "The current project has unsaved CAD or review changes. Save them before importing another drawing?",
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+            QMessageBox.Save,
+        )
+        if answer == QMessageBox.Cancel:
+            return False
+        if answer == QMessageBox.Save:
+            return self.save_project() if self.project_store else self._save_cad_for_replacement()
+        return True
+
+    def _save_cad_for_replacement(self) -> bool:
+        self.save_cad()
+        return not self.cad_dirty
+
     def _build_ui(self):
         self.setStyleSheet(DARK_STYLESHEET)
         self.setAccessibleName("Carrier AC Selector")
         self.setAccessibleDescription("HVAC load analysis, equipment selection, and CAD workflow")
+
+        project_menu = self.menuBar().addMenu("Project")
+        new_project_action = project_menu.addAction("New Project…")
+        new_project_action.triggered.connect(self.new_project)
+        open_project_action = project_menu.addAction("Open Project…")
+        open_project_action.triggered.connect(self.open_project)
+        save_project_action = project_menu.addAction("Save Project")
+        save_project_action.setShortcut(QKeySequence("Ctrl+S"))
+        save_project_action.triggered.connect(self.save_project)
 
         # Help menu: users can manually check for published GitHub releases.
         help_menu = self.menuBar().addMenu("Help")
@@ -2111,7 +2296,9 @@ class HAPToCarrierApp(QMainWindow):
         self.tabs.setCurrentWidget(self.cad_workspace_tab)
         self.workspace_tabs.setCurrentWidget(self.analyzer_workspace)
 
-    def _load_cad(self, path: str):
+    def _load_cad(self, path: str, *, skip_unsaved_prompt: bool = False):
+        if not skip_unsaved_prompt and not self._confirm_cad_replacement():
+            return
         previous = self._cad_worker
         if previous is not None and previous.isRunning():
             previous.request_cancel()
@@ -2178,6 +2365,22 @@ class HAPToCarrierApp(QMainWindow):
         self._set_cad_progress(100, "CAD import complete")
         self._cad_worker = None
         self._cad_loading_path = ""
+        if self.project_store is not None:
+            try:
+                source_path = Path(path).expanduser().resolve()
+                try:
+                    source_path.relative_to(self.project_store.root)
+                except ValueError:
+                    source_path = self.project_store.add_source("cad", source_path)
+                path = str(source_path)
+                document.path = source_path
+                self.project_store.set_working_dxf(raw_dxf_document)
+                self.project_store.save()
+            except Exception as exc:
+                logger.exception("Could not package CAD import into the project")
+                QMessageBox.critical(self, "Project Import Error", str(exc))
+                self._reset_cad_project_state()
+                return
         self._cad_summary = dict(summary or {})
         self._set_cad_loading(False)
         self.cad_source_path = path
@@ -2194,7 +2397,49 @@ class HAPToCarrierApp(QMainWindow):
         self.cad_workspace.set_project_data(document, [])
         # Phase 3: nothing becomes a room without review.  The dialog is the only
         # path from "polygon in the drawing" to "room in the HVAC workflow".
-        self.review_cad_rooms(initial=True)
+        restore = self._pending_project_restore
+        if restore:
+            try:
+                review = restore.get("room_review") or {}
+                if review:
+                    session.apply_dict(review)
+                self.cad_room_systems = dict(restore.get("room_systems") or {})
+                self.cad_room_loads = dict(restore.get("room_loads") or {})
+                self.cad_room_verified = set(restore.get("room_verified") or [])
+                self._restore_project_cart(restore.get("selected_units") or {})
+                self.current_system_name = str(restore.get("current_system_name") or "")
+                for field in ("current_btu", "current_cfm", "current_sensible"):
+                    if restore.get(field) is not None:
+                        setattr(self, field, float(restore[field]))
+                self._apply_cad_review(session)
+                for room_id, entry in (restore.get("room_selections") or {}).items():
+                    if room_id in {room.room_id for room in self.cad_rooms} and isinstance(entry, dict):
+                        restored_entry = dict(entry)
+                        if isinstance(restored_entry.get("row"), dict):
+                            restored_entry["row"] = pd.Series(restored_entry["row"])
+                        self.cad_room_selections[room_id] = restored_entry
+                if hasattr(self, "cad_workspace"):
+                    self.cad_workspace.refresh_assignments(
+                        self.cad_room_systems, self.cad_room_selections
+                    )
+                self._render_cad_rooms()
+                self._render_selected_table()
+                self._pending_project_restore = None
+                if self.project_store:
+                    self.project_store.update_state(self._project_snapshot())
+            except (OSError, TypeError, ValueError, ProjectStoreError) as exc:
+                logger.exception("Project review data could not be restored")
+                QMessageBox.warning(self, "Project Recovery", f"CAD loaded, but saved review state could not be fully restored:\n\n{exc}")
+                self.review_cad_rooms(initial=True)
+        else:
+            self.review_cad_rooms(initial=True)
+            if self.project_store is not None:
+                try:
+                    self.project_store.update_state(self._project_snapshot())
+                except (OSError, TypeError, ValueError, ProjectStoreError):
+                    logger.exception("Could not initialize the project's CAD review state")
+            self._pending_project_restore = None
+        self._set_cad_dirty(self.cad_dirty)
         if hasattr(self, "lbl_cad_landing_status"):
             self.lbl_cad_landing_status.setText(
                 f"Workspace opened for {os.path.basename(path)}. "
@@ -2224,18 +2469,35 @@ class HAPToCarrierApp(QMainWindow):
 
     def _set_cad_dirty(self, dirty: bool) -> None:
         self.cad_dirty = bool(dirty)
+        project_dirty = False
+        if self.project_store is not None:
+            try:
+                project_dirty = (
+                    ProjectStore.normalize(self._project_snapshot())
+                    != self.project_store.state
+                )
+            except (TypeError, ValueError):
+                project_dirty = True
         if hasattr(self, "cad_workspace"):
             self.cad_workspace.save_button.setEnabled(self.cad_document is not None)
         source = self.cad_save_path or self.cad_source_path or self.hap_source_path
-        project_name = Path(source).stem if source else "Untitled Project"
+        project_name = (
+            self.project_store.name if self.project_store
+            else Path(source).stem if source else "Untitled Project"
+        )
         if hasattr(self, "project_name_label"):
             self.project_name_label.setText(project_name)
-            self.project_name_label.setToolTip(str(source) if source else "No project file is currently open")
+            tooltip = str(self.project_store.root) if self.project_store else str(source)
+            self.project_name_label.setToolTip(tooltip if tooltip else "No project file is currently open")
         if hasattr(self, "save_state_label"):
             if self.cad_dirty:
                 state, color = "●  Unsaved CAD edits", "#f59e0b"
+            elif project_dirty:
+                state, color = "●  Unsaved project changes", "#f59e0b"
             elif self.cad_save_path:
                 state, color = "●  CAD saved", "#22c55e"
+            elif self.project_store is not None:
+                state, color = "●  Project saved", "#22c55e"
             elif self.cad_document is not None or self.hap_source_path:
                 state, color = "●  Loaded · not saved as project", "#93c5fd"
             else:
@@ -2288,13 +2550,37 @@ class HAPToCarrierApp(QMainWindow):
         self._cad_worker = None
         self._cad_loading_path = ""
         self._set_cad_loading(False)
+        self._pending_project_restore = None
+        self._reset_cad_project_state()
+        QMessageBox.critical(self, "CAD Import Error", message)
+
+    def _reset_cad_project_state(self) -> None:
+        """Clear every drawing-specific value after a failed/aborted import."""
+        self._pending_project_restore = None
         self.cad_source_path = ""
+        self.cad_save_path = None
         self.cad_document = None
+        self.cad_raw_dxf = None
+        self.cad_dirty = False
         self.cad_rooms = []
         self.cad_diagnostics = []
         self.cad_review_session = None
+        self.cad_matching = None
+        self.cad_room_systems.clear()
+        self.cad_room_loads.clear()
+        self.cad_room_selections.clear()
+        self.cad_room_verified.clear()
+        if hasattr(self, "cad_workspace"):
+            self.cad_workspace.set_project_data(None, [])
+        tab = getattr(self, "cad_workspace_tab", None)
+        if tab is not None:
+            index = self.tabs.indexOf(tab)
+            if index >= 0:
+                self.tabs.removeTab(index)
+            tab.deleteLater()
+            self.cad_workspace_tab = None
+        self._set_cad_dirty(False)
         self._render_cad_rooms()
-        QMessageBox.critical(self, "CAD Import Error", message)
 
     def review_cad_rooms(self, initial: bool = False):
         """Open the layer / room-candidate review dialog for the loaded drawing."""
@@ -2320,6 +2606,7 @@ class HAPToCarrierApp(QMainWindow):
         rooms = session.usable_rooms
         self.cad_rooms = rooms
         self.cad_diagnostics = list(session.report.diagnostics) if session.report else []
+        self.cad_diagnostics.extend(getattr(self.cad_document, "diagnostics", ()))
         known_ids = {room.room_id for room in rooms}
         self.cad_room_systems = {
             room_id: name for room_id, name in self.cad_room_systems.items() if room_id in known_ids
@@ -2507,6 +2794,7 @@ class HAPToCarrierApp(QMainWindow):
         else:
             self.cad_room_verified.discard(room_id)
         self._update_cad_export_state()
+        self._set_cad_dirty(self.cad_dirty)
 
     def _refresh_cad_room_selections(self):
         """Select Carrier equipment from verified room loads, never system totals."""
@@ -2654,6 +2942,7 @@ class HAPToCarrierApp(QMainWindow):
         if hasattr(self, "btn_cad_review"):
             self.btn_cad_review.setEnabled(self.cad_review_session is not None)
         self._update_cad_export_state()
+        self._set_cad_dirty(self.cad_dirty)
 
     def _update_cad_export_state(self):
         ready = bool(
@@ -2766,8 +3055,19 @@ class HAPToCarrierApp(QMainWindow):
 
     def _load_report(self, path: str):
         """Load a HAP report from `path` (dialog + drag-and-drop share this)."""
+        if self.project_store is not None:
+            source_path = Path(path).expanduser().resolve()
+            try:
+                source_path.relative_to(self.project_store.root)
+            except ValueError:
+                try:
+                    source_path = self.project_store.add_source("hap", source_path)
+                    self.project_store.save()
+                except (OSError, ProjectStoreError) as exc:
+                    QMessageBox.critical(self, "Project Import Error", str(exc))
+                    return
+            path = str(source_path)
         self.hap_source_path = path
-        self._set_cad_dirty(self.cad_dirty)
         self.cad_room_systems.clear()
         self.cad_room_selections.clear()
         self.cad_room_loads = {
@@ -2868,10 +3168,26 @@ class HAPToCarrierApp(QMainWindow):
         # Always reset state from THIS report (never keep a previous report's values)
         self.current_btu, self.current_cfm = btu, cfm
         self.current_sensible = res.sensible_btu
-        self.input_btu.setText(f"{btu:,.0f}" if btu > 0 else "")
-        self.input_cfm.setText(f"{cfm:,.0f}" if cfm > 0 else "")
+        pending = self._project_restore_hap_state
+        has_project_cad = bool(
+            self.project_store
+            and (self.project_store.asset("cad_working") or self.project_store.asset("cad_original"))
+        )
+        if pending is not None:
+            self._restore_project_cart(pending.get("selected_units") or {})
+            if pending.get("current_system_name") is not None:
+                self.current_system_name = str(pending["current_system_name"])
+            for field in ("current_btu", "current_cfm", "current_sensible"):
+                if pending.get(field) is not None:
+                    setattr(self, field, float(pending[field]))
+            self._project_restore_hap_state = None
+        if pending is not None and not has_project_cad:
+            self._pending_project_restore = None
+        self.input_btu.setText(f"{self.current_btu:,.0f}" if self.current_btu > 0 else "")
+        self.input_cfm.setText(f"{self.current_cfm:,.0f}" if self.current_cfm > 0 else "")
         self.input_sensible.setText(
-            f"{res.sensible_btu:,.0f}" if res.sensible_btu > 0 else "")
+            f"{self.current_sensible:,.0f}" if self.current_sensible > 0 else "")
+        self._set_cad_dirty(self.cad_dirty)
 
         amber = "color: #f59e0b; font-size: 11px; padding: 2px 0;"
         green = "color: #34d399; font-size: 11px; padding: 2px 0;"
@@ -4475,11 +4791,13 @@ class HAPToCarrierApp(QMainWindow):
     # ──────────────────────────────────────────────────────────────
     # Shutdown / drag-and-drop
     # ──────────────────────────────────────────────────────────────
-    _DROP_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff",
-                  ".pdf", ".rtf")
+    _HAP_DROP_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".pdf", ".rtf")
+    _CAD_DROP_EXTS = (".dwg", ".dxf")
+    _DROP_EXTS = _HAP_DROP_EXTS + _CAD_DROP_EXTS
 
     def closeEvent(self, event):
         """Stop the OCR thread cleanly so Qt doesn't abort on shutdown."""
+        discard_project_changes = False
         if self.cad_dirty:
             answer = QMessageBox.question(
                 self,
@@ -4492,10 +4810,23 @@ class HAPToCarrierApp(QMainWindow):
                 event.ignore()
                 return
             if answer == QMessageBox.Save:
-                self.save_cad()
+                if self.project_store:
+                    self.save_project()
+                else:
+                    self.save_cad()
                 if self.cad_dirty:
                     event.ignore()
                     return
+            elif answer == QMessageBox.Discard:
+                discard_project_changes = True
+        if self.project_store and not discard_project_changes:
+            if not self.save_project(silent=True):
+                QMessageBox.warning(
+                    self, "Project Not Saved",
+                    "The project could not be saved. Resolve the save error before closing to avoid losing project data.",
+                )
+                event.ignore()
+                return
         w = getattr(self, "ocr_worker", None)
         if w is not None and w.isRunning():
             for sig in (w.done, w.error, w.progress):
@@ -4521,8 +4852,6 @@ class HAPToCarrierApp(QMainWindow):
         event.accept()
 
     def dragEnterEvent(self, event):
-        if not self.btn_upload.isEnabled():
-            return
         md = event.mimeData()
         if not md.hasUrls():
             return
@@ -4532,11 +4861,13 @@ class HAPToCarrierApp(QMainWindow):
                 return
 
     def dropEvent(self, event):
-        if not self.btn_upload.isEnabled():
-            return
         for url in event.mimeData().urls():
             p = url.toLocalFile()
-            if p.lower().endswith(self._DROP_EXTS):
+            lower = p.lower()
+            if lower.endswith(self._CAD_DROP_EXTS):
+                self._load_cad(p)
+                return
+            if lower.endswith(self._HAP_DROP_EXTS) and self.btn_upload.isEnabled():
                 self._load_report(p)
                 return
 
@@ -4808,6 +5139,7 @@ class HAPToCarrierApp(QMainWindow):
         if hasattr(self, "selection_workspace"):
             self.selection_workspace.set_selected_units(self.selected_units)
         self._elec_sync_from_cart()
+        self._set_cad_dirty(self.cad_dirty)
 
     def _remove_from_cart(self):
         rows = {it.row() for it in self.table_selected.selectedItems()}

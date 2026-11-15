@@ -135,6 +135,7 @@ class CadDocument:
     unit_code: int
     layers: list[str]
     entities: list[CadEntity]
+    diagnostics: list[str] = field(default_factory=list)
 
     @property
     def unit_scale_to_meters(self) -> float | None:
@@ -304,7 +305,8 @@ def _entity_data(entity: DXFGraphic) -> dict[str, Any]:
 
 
 def _iter_modelspace_entities(
-    entities: Iterable[DXFGraphic], *, max_block_depth: int = 32
+    entities: Iterable[DXFGraphic], *, max_block_depth: int = 32,
+    diagnostics: list[str] | None = None,
 ) -> Iterator[tuple[DXFGraphic, str, tuple[str, ...]]]:
     """Yield model-space entities and transformed contents of nested blocks.
 
@@ -333,11 +335,15 @@ def _iter_modelspace_entities(
             # counts, then add each rendered instance's transformed contents.
             yield entity, effective_layer, insert_handles
             if depth >= max_block_depth:
-                raise ValueError(
+                message = (
                     f"Block nesting exceeds {max_block_depth} levels at "
                     f"INSERT {entity.dxf.get('handle', 'unknown')} "
-                    f"({entity.dxf.get('name', 'unnamed')})."
+                    f"({entity.dxf.get('name', 'unnamed')}); deeper contents were not analyzed."
                 )
+                if diagnostics is None:
+                    raise ValueError(message)
+                diagnostics.append(message)
+                continue
 
             handle = entity.dxf.get("handle")
             next_handles = insert_handles
@@ -363,44 +369,64 @@ def _iter_modelspace_entities(
             except Exception as exc:
                 name = str(entity.dxf.get("name", "unnamed"))
                 insert_handle = str(handle) if handle else "unknown"
-                raise ValueError(
+                message = (
                     f"Could not expand DXF block '{name}' at INSERT "
-                    f"{insert_handle}: {exc}"
-                ) from exc
+                    f"{insert_handle}: {exc}; original INSERT is retained in the source drawing."
+                )
+                if diagnostics is None:
+                    raise ValueError(message) from exc
+                diagnostics.append(message)
 
     yield from walk(entities, None, (), 0)
 
 
-def read_dxf(path: str | Path) -> CadDocument:
-    """Read a DXF file and return the application-neutral CAD model."""
+def read_dxf(path: str | Path, *, drawing=None) -> CadDocument:
+    """Read a DXF file, optionally reusing an already parsed ezdxf Drawing."""
 
     source = Path(path)
     if not source.is_file():
         raise FileNotFoundError(f"DXF file not found: {source}")
 
-    try:
-        drawing = ezdxf.readfile(source)
-    except ezdxf.DXFStructureError as exc:
-        raise ValueError(f"Invalid or corrupted DXF file: {source}") from exc
+    if drawing is None:
+        try:
+            drawing = ezdxf.readfile(source)
+        except ezdxf.DXFStructureError as exc:
+            raise ValueError(f"Invalid or corrupted DXF file: {source}") from exc
 
     unit_code = int(drawing.header.get("$INSUNITS", 0) or 0)
     layers = sorted(str(layer.dxf.name) for layer in drawing.layers)
     entities: list[CadEntity] = []
+    diagnostics: list[str] = []
+    unsupported_types: dict[str, int] = {}
+    supported_types = {
+        "LINE", "SOLID", "LWPOLYLINE", "POLYLINE", "ARC", "CIRCLE",
+        "HATCH", "SPLINE", "TEXT", "MTEXT", "ATTRIB", "INSERT",
+    }
 
     for entity, layer, source_insert_handles in _iter_modelspace_entities(
-        drawing.modelspace()
+        drawing.modelspace(), diagnostics=diagnostics
     ):
         entity_handle = entity.dxf.get("handle") or (
             source_insert_handles[-1] if source_insert_handles else None
         )
+        entity_type = entity.dxftype()
+        data = _entity_data(entity)
+        if entity_type not in supported_types:
+            unsupported_types[entity_type] = unsupported_types.get(entity_type, 0) + 1
         entities.append(
             CadEntity(
-                entity_type=entity.dxftype(),
+                entity_type=entity_type,
                 layer=layer,
                 handle=str(entity_handle) if entity_handle else None,
-                data=_entity_data(entity),
+                data=data,
                 source_insert_handles=source_insert_handles,
             )
+        )
+
+    for entity_type, count in sorted(unsupported_types.items()):
+        diagnostics.append(
+            f"{count} {entity_type} entity/entities are retained in the original drawing "
+            "but not interpreted by the neutral model."
         )
 
     return CadDocument(
@@ -409,4 +435,5 @@ def read_dxf(path: str | Path) -> CadDocument:
         unit_code=unit_code,
         layers=layers,
         entities=entities,
+        diagnostics=diagnostics,
     )

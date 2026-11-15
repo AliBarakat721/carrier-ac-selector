@@ -38,11 +38,17 @@ The CAD Workflow accepts both DXF and DWG floor plans. DXF files are read direct
 1. Download and install ODA File Converter from the official [Open Design Alliance download page](https://www.opendesign.com/guestfiles/oda_file_converter).
 2. Restart Carrier AC Selector after installation.
 3. Open **CAD Workflow → Upload DWG / DXF** and select your drawing.
-4. The application converts the DWG to a temporary R2018 DXF, validates it with the existing DXF reader, and then detects rooms. The temporary file is deleted after loading; your original DWG is not changed.
+4. The application converts the DWG to an R2018 DXF, validates it with the existing DXF reader, and then detects rooms. Without an active project, the conversion is temporary. In a project, the original DWG and a project-owned working DXF are retained; your original DWG is not changed.
 
 If the converter is installed in a non-standard location, set the environment variable `ODA_FILE_CONVERTER` to its full executable path before starting the application. On Windows, the default ODA installation path is detected by ezdxf. On Linux, ODA's command-line conversion may need a virtual display; install and configure `xvfb` if the converter does not start in your desktop/session environment.
 
 DWG import is optional: users who only open DXF files do not need ODA File Converter.
+
+### Portable project files
+
+Use **Project → New Project** to create a project folder, then import CAD and HAP files. Imported source files are copied into the project; the originals are not modified. **Project → Save Project** stores the working DXF and the room-review decisions, units/layer overrides, room-to-system assignments, room loads and airflow, verification flags, and selected equipment. **Project → Open Project** restores those files and decisions. The project folder can be moved as a unit because its manifest refers to project-relative paths.
+
+**Save Project** is distinct from **Save CAD**: project save preserves the editable drawing and engineering/review state inside the project, while Save CAD exports an edited drawing to a user-chosen DXF. CAD changes and project review changes are protected by a Save / Discard / Cancel prompt before another drawing replaces them. Project manifests are written atomically with the previous manifest retained as a recovery backup; up to five previous working-DXF revisions are also kept in `backups/`.
 
 #### Fedora 44 / Linux AppImage
 
@@ -215,6 +221,7 @@ The current regression suite covers database-independent HAP parsing, including 
 core.py                       Pure logic: database loading, HAP parsing, selection
 ocr_engine.py                 OCR front-end: RTF/PDF text layer/Tesseract
 main.py                       PySide6 GUI and report export
+project_store.py              Portable project manifest, assets, and recovery
 electrical_engine.py          Electrical load and cable-sizing calculations
 roi_tab.py                    Inverter ROI calculations and export helpers
 data/Carrier_AC_Database.xlsx Carrier catalogue

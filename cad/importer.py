@@ -45,7 +45,8 @@ def read_cad_file_with_raw(path: str | Path) -> tuple[CadDocument, object]:
 
     suffix = source.suffix.lower()
     if suffix == ".dxf":
-        return read_dxf(source), ezdxf.readfile(source)
+        raw_dxf = ezdxf.readfile(source)
+        return read_dxf(source, drawing=raw_dxf), raw_dxf
     if suffix != ".dwg":
         raise ValueError(
             f"Unsupported CAD format: {source.suffix or '(no extension)'}. "
@@ -92,7 +93,7 @@ def read_cad_file_with_raw(path: str | Path) -> tuple[CadDocument, object]:
                 )
 
             raw_dxf = ezdxf.readfile(converted)
-            document = read_dxf(converted)
+            document = read_dxf(converted, drawing=raw_dxf)
             # Preserve the original source path in the in-memory model.
             document.path = source
             return document, raw_dxf

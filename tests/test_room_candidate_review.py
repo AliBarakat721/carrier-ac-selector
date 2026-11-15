@@ -327,6 +327,31 @@ def test_no_identifiable_wall_layer_skips_wall_polygonization(tmp_path):
     )
 
 
+def test_door_span_closes_wall_gap_for_topology_detection(tmp_path):
+    source = tmp_path / "door-gap.dxf"
+    drawing = ezdxf.new("R2018")
+    drawing.header["$INSUNITS"] = 6
+    drawing.layers.new("A-WALL")
+    drawing.layers.new("A-DOOR")
+    modelspace = drawing.modelspace()
+    for start, end in [
+        ((0, 0), (4, 0)),
+        ((5, 0), (10, 0)),
+        ((10, 0), (10, 6)),
+        ((10, 6), (0, 6)),
+        ((0, 6), (0, 0)),
+    ]:
+        modelspace.add_line(start, end, dxfattribs={"layer": "A-WALL"})
+    modelspace.add_line((4, 0), (5, 0), dxfattribs={"layer": "A-DOOR"})
+    drawing.saveas(source)
+
+    report = detect_spaces_with_review(source)
+
+    assert len(report.rooms) == 1
+    assert round(report.rooms[0].area, 3) == 60.0
+    assert any(item["type"] == "door_opening_gap_tolerance" for item in report.diagnostics)
+
+
 def test_user_override_promotes_an_unclassified_layer_to_walls(tmp_path):
     source = tmp_path / "unclassified.dxf"
     drawing = ezdxf.new("R2018")

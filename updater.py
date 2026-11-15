@@ -29,12 +29,13 @@ MAX_COMPRESSION_RATIO = 250
 
 ALLOWED_ROOT_FILES = {
     "main.py", "core.py", "ocr_engine.py", "electrical_engine.py",
-    "roi_tab.py", "updater.py", "version.py", "apply_update.ps1",
+    "roi_tab.py", "logging_setup.py", "room_review_dialog.py", "units.py",
+    "updater.py", "version.py", "apply_update.ps1",
     "Start_Carrier.bat", "setup.ps1", "run.ps1", "test.ps1",
     "requirements.txt", "requirements-dev.txt", "README.md",
 }
 ALLOWED_DATA_FILES = {"Carrier_AC_Database.xlsx", "Carrier_AC_Database.csv"}
-ALLOWED_PACKAGE_DIRS = {"cad", "engineering", "equipment", "hap", "integration", "reports", "ui"}
+ALLOWED_PACKAGE_DIRS = {"cad", "engineering", "hap", "integration", "reports", "ui"}
 # Backward-compatible list used by existing updater fixtures. New package
 # trees are validated through ALLOWED_PACKAGE_DIRS below.
 ALLOWED_CAD_FILES = {

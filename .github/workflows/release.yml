@@ -1,7 +1,11 @@
 name: Publish Windows Release
 
 on:
+  pull_request:
+  workflow_dispatch:
   push:
+    branches:
+      - "fix/release-allowlists-consistency"
     tags:
       - "v*"
 
@@ -23,6 +27,7 @@ jobs:
           python-version: "3.12"
 
       - name: Validate release version
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         run: |
           $tag = $env:GITHUB_REF_NAME
@@ -45,7 +50,7 @@ jobs:
         run: |
           python -m pip install -r requirements-dev.txt
           if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
-          $packageDirs = @(@("cad", "engineering", "equipment", "hap", "integration", "reports", "ui") |
+          $packageDirs = @(@("cad", "engineering", "hap", "integration", "reports", "ui") |
             Where-Object { Test-Path -LiteralPath $_ -PathType Container })
           $files = @()
           if ($packageDirs.Count -gt 0) {
@@ -97,7 +102,7 @@ jobs:
             throw "The application data directory is missing."
           }
           Copy-Item -LiteralPath "data" -Destination (Join-Path $stage "data") -Recurse
-          foreach ($directory in @("cad", "engineering", "equipment", "hap", "integration", "reports", "ui")) {
+          foreach ($directory in @("cad", "engineering", "hap", "integration", "reports", "ui")) {
             if (Test-Path -LiteralPath $directory -PathType Container) {
               $sourceFiles = Get-ChildItem -LiteralPath $directory -Filter *.py -File -Recurse |
                 Where-Object { $_.FullName -notmatch '[\\/]__pycache__[\\/]' }
@@ -134,7 +139,7 @@ jobs:
       - name: Test fresh v2.0.1 install and real in-place update
         shell: pwsh
         run: |
-          $packageDirs = @(@("cad", "engineering", "equipment", "hap", "integration", "reports", "ui") |
+          $packageDirs = @(@("cad", "engineering", "hap", "integration", "reports", "ui") |
             Where-Object { Test-Path -LiteralPath $_ -PathType Container })
           if ($packageDirs.Count -eq 0) {
           $legacy = Join-Path $env:RUNNER_TEMP "carrier-v2.0.1-install"
@@ -194,7 +199,18 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "The manually migrated installation could not import the application packages." }
           }
 
+      - name: Upload validated Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: CarrierACSelector-Windows-${{ github.run_number }}
+          path: |
+            CarrierACSelector-Windows.zip
+            SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Publish GitHub Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true

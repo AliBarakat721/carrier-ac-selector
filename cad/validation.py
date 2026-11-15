@@ -104,4 +104,8 @@ def validate_cad_design(document, rooms: Iterable[object], *, indoor_units=(), d
 
     if not list(indoor_units or ()) and room_list:
         report.add("WARNING", "NO_INDOOR_UNITS", "No indoor-unit placements are present yet.")
+    if report.warnings:
+        for room_id, status in report.room_statuses.items():
+            if status == "PASS":
+                report.room_statuses[room_id] = "WARNING"
     return report

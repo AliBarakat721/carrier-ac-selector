@@ -6,6 +6,7 @@ from shapely.geometry import Polygon
 
 from cad.dxf_reader import CadDocument, CadEntity
 from cad.validation import validate_cad_design
+from ui.cad_workspace import CadViewport
 
 
 def _room(room_id, polygon, *, unit_status="VERIFIED"):
@@ -70,3 +71,20 @@ def test_validation_warns_about_unsupported_entities():
     )
 
     assert any(issue.code == "UNSUPPORTED_ENTITIES" for issue in report.warnings)
+
+
+def test_polygon_area_uses_shoelace_formula():
+    assert CadViewport.polygon_area([(0, 0), (5, 0), (5, 4), (0, 4)]) == 20.0
+
+
+def test_validation_marks_overlapping_rooms_as_errors():
+    document = CadDocument("plan.dxf", "meters", 6, ["A-WALL"], [])
+    report = validate_cad_design(
+        document,
+        [
+            _room("ROOM-1", Polygon([(0, 0), (3, 0), (3, 3), (0, 3)])),
+            _room("ROOM-2", Polygon([(2, 2), (5, 2), (5, 5), (2, 5)])),
+        ],
+        indoor_units=[object(), object()],
+    )
+    assert report.room_statuses == {"ROOM-1": "ERROR", "ROOM-2": "ERROR"}

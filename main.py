@@ -2310,6 +2310,14 @@ class HAPToCarrierApp(QMainWindow):
                 self.cad_room_systems,
                 self.cad_room_selections,
             )
+            self.cad_workspace.set_validation_report(
+                validate_cad_design(
+                    self.cad_document,
+                    self.cad_rooms,
+                    indoor_units=self.cad_room_selections.values(),
+                    diagnostics=self.cad_diagnostics,
+                )
+            )
         self._render_cad_rooms()
         blockers = session.blockers()
         if blockers:

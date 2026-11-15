@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QGraphicsView,
     QHBoxLayout,
     QInputDialog,
+    QComboBox,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -40,6 +41,9 @@ PALETTE = {
     "room": QColor("#2f6fb5"),
     "room_fill": QColor(173, 216, 240, 70),
     "selected": QColor("#e8590c"),
+    "validation_pass": QColor("#15803d"),
+    "validation_warning": QColor("#b45309"),
+    "validation_error": QColor("#b91c1c"),
     "text": QColor("#1f2933"),
     "muted": QColor("#6b7785"),
     "panel": QColor("#f4f6f8"),
@@ -135,6 +139,7 @@ class CadViewport(QGraphicsView):
     action_undone = Signal()
     prompt_changed = Signal(str)
     measurement_changed = Signal(float, float)
+    area_measured = Signal(float)
 
     def __init__(self, project_root: Path, parent=None):
         super().__init__(parent)
@@ -158,6 +163,10 @@ class CadViewport(QGraphicsView):
         self._snap_enabled = True
         self._ortho_enabled = False
         self._snap_points = []
+        self._snap_candidates = {"endpoint": [], "midpoint": [], "center": [], "intersection": []}
+        self._snap_type = "all"
+        self._measurement_points = []
+        self._validation_statuses = {}
         self._measurement_item = None
         self._render_token = 0
         self._draw_grid()
@@ -165,6 +174,7 @@ class CadViewport(QGraphicsView):
     def set_mode(self, mode: str):
         self._mode = mode
         self._pending_point = None
+        self._measurement_points = []
         self._move_entity = None
         self._clear_preview()
         if mode != "measure":
@@ -180,6 +190,7 @@ class CadViewport(QGraphicsView):
             "delete": "Delete · click an entity (rooms are protected)",
             "undo": "Undo last CAD edit",
             "measure": "Measure · click two points",
+            "measure_area": "Area · click polygon points, double-click to finish",
         }
         self.prompt_changed.emit(prompts.get(mode, "Select mode"))
 
@@ -190,6 +201,35 @@ class CadViewport(QGraphicsView):
     def set_ortho_enabled(self, enabled: bool):
         self._ortho_enabled = bool(enabled)
         self.prompt_changed.emit(f"ORTHO {'ON' if self._ortho_enabled else 'OFF'}")
+
+    def set_snap_type(self, snap_type: str):
+        self._snap_type = str(snap_type).casefold()
+        self.prompt_changed.emit(f"SNAP TYPE {snap_type}")
+
+    def set_validation_statuses(self, statuses):
+        self._validation_statuses = dict(statuses or {})
+        for room_id, item in self._room_items.items():
+            status = self._validation_statuses.get(room_id, "PASS")
+            color = {
+                "ERROR": PALETTE["validation_error"],
+                "WARNING": PALETTE["validation_warning"],
+                "PASS": PALETTE["validation_pass"],
+            }.get(status, PALETTE["room"])
+            pen = QPen(color, 2.4 if item.isSelected() else 1.6)
+            pen.setCosmetic(True)
+            item.setPen(pen)
+            item.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(), 55)))
+
+    @staticmethod
+    def polygon_area(points):
+        """Return the absolute shoelace area for a sequence of 2D points."""
+        if len(points) < 3:
+            return 0.0
+        return abs(sum(
+            points[index][0] * points[(index + 1) % len(points)][1]
+            - points[(index + 1) % len(points)][0] * points[index][1]
+            for index in range(len(points))
+        )) / 2.0
 
     def _clear_measurement(self):
         if self._measurement_item is not None:
@@ -202,8 +242,14 @@ class CadViewport(QGraphicsView):
         value = (float(point.x()), -float(point.y()))
         if self._snap_enabled and self._snap_points:
             threshold = max(abs(self.mapToScene(12, 0).x() - self.mapToScene(0, 0).x()), 1e-6)
+            if self._snap_type == "all":
+                snap_points = self._snap_points
+            else:
+                snap_points = self._snap_candidates.get(self._snap_type, self._snap_points)
+            if not snap_points:
+                snap_points = self._snap_points
             nearest = min(
-                self._snap_points,
+                snap_points,
                 key=lambda candidate: math.hypot(candidate[0] - value[0], candidate[1] - value[1]),
             )
             if math.hypot(nearest[0] - value[0], nearest[1] - value[1]) <= threshold:
@@ -227,6 +273,48 @@ class CadViewport(QGraphicsView):
         # otherwise it would inflate itemsBoundingRect and make small plans
         # appear tiny after fitInView().
         return None
+
+    def _rebuild_snap_candidates(self, document, rooms):
+        candidates = {"endpoint": [], "midpoint": [], "center": [], "intersection": []}
+        segments = []
+        for room in rooms or []:
+            points = [(float(x), float(y)) for x, y in room.polygon.exterior.coords]
+            candidates["endpoint"].extend(points)
+            segments.extend(zip(points, points[1:]))
+        for entity in (document.entities if document else []):
+            data = entity.data
+            kind = entity.entity_type.upper()
+            if kind == "LINE" and data.get("start") and data.get("end"):
+                start, end = tuple(data["start"]), tuple(data["end"])
+                segments.append((start, end))
+                candidates["endpoint"].extend((start, end))
+            elif kind in {"LWPOLYLINE", "POLYLINE", "SPLINE"}:
+                points = [tuple(point) for point in data.get("points", [])]
+                candidates["endpoint"].extend(points)
+                segments.extend(zip(points, points[1:]))
+                if data.get("closed") and len(points) > 2:
+                    segments.append((points[-1], points[0]))
+            elif kind in {"CIRCLE", "ARC"} and data.get("center"):
+                candidates["center"].append(tuple(data["center"]))
+        candidates["midpoint"] = [
+            ((float(left[0]) + float(right[0])) / 2, (float(left[1]) + float(right[1])) / 2)
+            for left, right in segments
+        ]
+        for index, (left, right) in enumerate(segments):
+            ax, ay = left
+            bx, by = right
+            for other_left, other_right in segments[index + 1 :]:
+                cx, cy = other_left
+                dx, dy = other_right
+                denominator = (bx - ax) * (dy - cy) - (by - ay) * (dx - cx)
+                if abs(denominator) < 1e-12:
+                    continue
+                t = ((cx - ax) * (dy - cy) - (cy - ay) * (dx - cx)) / denominator
+                u = -((bx - ax) * (cy - ay) - (by - ay) * (cx - ax)) / denominator
+                if 0 <= t <= 1 and 0 <= u <= 1:
+                    candidates["intersection"].append((ax + t * (bx - ax), ay + t * (by - ay)))
+        self._snap_candidates = candidates
+        self._snap_points = [point for values in candidates.values() for point in values]
 
     def drawBackground(self, painter, rect):
         painter.fillRect(rect, PALETTE["canvas"])
@@ -273,6 +361,7 @@ class CadViewport(QGraphicsView):
                 self._snap_points.extend(
                     (float(x), float(y)) for x, y in data.get("points", [])
                 )
+        self._rebuild_snap_candidates(document, self._rooms)
         self._render_entities(document.entities if document else [])
         geometry_rect = self.scene.itemsBoundingRect()
         if geometry_rect.isValid() and geometry_rect.width() > 0 and geometry_rect.height() > 0:
@@ -419,6 +508,7 @@ class CadViewport(QGraphicsView):
                 self._snap_points.extend(
                     (float(x), float(y)) for x, y in data.get("points", [])
                 )
+        self._rebuild_snap_candidates(document, self._rooms)
         self._render_entities_queue = list(document.entities if document else [])
         self._render_text_queue = []
         self._render_rooms_queue = self._rooms
@@ -500,15 +590,21 @@ class CadViewport(QGraphicsView):
             self._rendered_text_labels.append((text.strip().casefold(), (float(insert[0]), float(insert[1]))))
 
     def _render_rooms(self, rooms, annotation_height: float = 1.0):
-        pen = QPen(PALETTE["room"])
-        pen.setWidthF(1.6)
-        pen.setCosmetic(True)
         for room in rooms:
+            status = self._validation_statuses.get(room.room_id, "PASS")
+            color = {
+                "ERROR": PALETTE["validation_error"],
+                "WARNING": PALETTE["validation_warning"],
+                "PASS": PALETTE["validation_pass"],
+            }.get(status, PALETTE["room"])
+            pen = QPen(color)
+            pen.setWidthF(1.6)
+            pen.setCosmetic(True)
             coords = list(room.polygon.exterior.coords)
             polygon = [QPointF(float(x), -float(y)) for x, y in coords]
             item = QGraphicsPolygonItem(polygon)
             item.setPen(pen)
-            item.setBrush(QBrush(PALETTE["room_fill"]))
+            item.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(), 55)))
             item.setData(0, room)
             item.setZValue(-1)  # tint sits behind walls/furniture
             self.scene.addItem(item)
@@ -543,6 +639,8 @@ class CadViewport(QGraphicsView):
         self._cursor_world_point = self._world_point(event, self._pending_point)
         if self._mode in {"line", "rectangle", "circle", "measure"} and self._pending_point is not None:
             self._update_drawing_preview(self._pending_point, self._cursor_world_point)
+        elif self._mode == "measure_area" and self._measurement_points:
+            self._update_drawing_preview(self._measurement_points[0], self._cursor_world_point)
         super().mouseMoveEvent(event)
 
     def _update_drawing_preview(self, first, current):
@@ -550,6 +648,17 @@ class CadViewport(QGraphicsView):
         x1, y1 = first
         x2, y2 = current
         path = QPainterPath()
+        if self._mode == "measure_area" and self._measurement_points:
+            points = self._measurement_points + [current]
+            path = QPainterPath()
+            path.moveTo(points[0][0], -points[0][1])
+            for point in points[1:]:
+                path.lineTo(point[0], -point[1])
+            pen = QPen(QColor("#d97706"), 1.8, Qt.DashLine)
+            pen.setCosmetic(True)
+            self._preview_item = self.scene.addPath(path, pen, QBrush(QColor(251, 191, 36, 55)))
+            self._preview_item.setZValue(1000)
+            return
         if math.isclose(x1, x2) and math.isclose(y1, y2):
             path.addEllipse(QPointF(x1, -y1), 3.5, 3.5)
         elif self._mode in {"line", "measure"}:
@@ -566,6 +675,15 @@ class CadViewport(QGraphicsView):
         self._preview_item.setZValue(1000)
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self._mode == "measure_area":
+            point = self._world_point(event, self._measurement_points[-1] if self._measurement_points else None)
+            self._measurement_points.append(point)
+            if len(self._measurement_points) == 1:
+                self.prompt_changed.emit("Area measurement started · click more points, double-click to finish")
+            else:
+                self._update_drawing_preview(self._measurement_points[0], point)
+            event.accept()
+            return
         if event.button() == Qt.LeftButton and self._mode in {"line", "rectangle", "circle", "measure"}:
             world_point = self._world_point(event, self._pending_point)
             if self._pending_point is None:
@@ -639,6 +757,33 @@ class CadViewport(QGraphicsView):
             elif value is not None:
                 self.entity_selected.emit(value)
         super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton and self._mode == "measure_area":
+            point = self._world_point(event, self._measurement_points[-1] if self._measurement_points else None)
+            if not self._measurement_points or point != self._measurement_points[-1]:
+                self._measurement_points.append(point)
+            if len(self._measurement_points) >= 3:
+                area = self.polygon_area(self._measurement_points)
+                self._clear_preview()
+                path = QPainterPath()
+                path.moveTo(self._measurement_points[0][0], -self._measurement_points[0][1])
+                for item in self._measurement_points[1:]:
+                    path.lineTo(item[0], -item[1])
+                path.closeSubpath()
+                pen = QPen(QColor("#d97706"), 2.0)
+                pen.setCosmetic(True)
+                shape = self.scene.addPath(path, pen, QBrush(QColor(251, 191, 36, 75)))
+                label = self.scene.addSimpleText(f"Area {area:.3f}²")
+                label.setBrush(QBrush(QColor("#92400e")))
+                label.setPos(self._measurement_points[0][0], -self._measurement_points[0][1])
+                self._measurement_item = (shape, label)
+                self.area_measured.emit(area)
+                self.prompt_changed.emit(f"Area {area:.3f} square drawing units")
+            self._measurement_points = []
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
     def _highlight_room(self, room_id):
         for key, item in self._room_items.items():
@@ -886,6 +1031,7 @@ class CadWorkspace(QWidget):
         self.tool_buttons = {}
         for mode, label, icon_name in (
             ("measure", "Measure", "distance_point_to_point"),
+            ("measure_area", "Area", "area"),
             ("line", "Draw line", "line_2p"),
             ("rectangle", "Rectangle", "line_rectangle"),
             ("circle", "Circle", "circle_center_point"),
@@ -925,6 +1071,16 @@ class CadWorkspace(QWidget):
         self.snap_button.setChecked(True)
         self.snap_button.toggled.connect(self.viewport.set_snap_enabled)
         tool_row.addWidget(self.snap_button)
+        self.snap_type = QComboBox()
+        self.snap_type.addItem("Snap: All", "all")
+        self.snap_type.addItem("Endpoint", "endpoint")
+        self.snap_type.addItem("Midpoint", "midpoint")
+        self.snap_type.addItem("Center", "center")
+        self.snap_type.addItem("Intersection", "intersection")
+        self.snap_type.currentIndexChanged.connect(
+            lambda _index: self.viewport.set_snap_type(self.snap_type.currentData())
+        )
+        tool_row.addWidget(self.snap_type)
         self.ortho_button = QPushButton("Ortho")
         self.ortho_button.setCheckable(True)
         self.ortho_button.toggled.connect(self.viewport.set_ortho_enabled)
@@ -1124,6 +1280,7 @@ class CadWorkspace(QWidget):
         for mode, button in self.tool_buttons.items():
             button.setText("" if compact else {
                 "measure": "Measure",
+                "measure_area": "Area",
                 "line": "Draw line", "rectangle": "Rectangle", "circle": "Circle",
                 "move": "Move", "rotate": "Rotate", "scale": "Scale",
                 "delete": "Delete", "undo": "Undo", "select": "Select",
@@ -1163,6 +1320,12 @@ class CadWorkspace(QWidget):
         self.status.setText(f"{filename}{diagnostics}")
         if not self.rooms:
             self.properties.value.setText("No room boundaries detected.\nImport a drawing or review geometry diagnostics.")
+
+    def set_validation_report(self, report):
+        """Apply a :mod:`cad.validation` report to the room overlay colors."""
+        self.viewport.set_validation_statuses(
+            getattr(report, "room_statuses", {}) if report is not None else {}
+        )
 
     def _select_room_from_table(self, row, _column):
         item = self.room_table.item(row, 0)

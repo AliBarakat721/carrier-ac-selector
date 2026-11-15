@@ -232,7 +232,7 @@ QPushButton {
 }
 QPushButton:hover  { background-color: #2563eb; }
 QPushButton:pressed{ background-color: #1e40af; }
-QPushButton:disabled { background-color: #374151; color: #6b7280; }
+QPushButton:disabled { background-color: #374151; color: #9aa8b8; }
 QPushButton#btn_success { background-color: #059669; }
 QPushButton#btn_success:hover { background-color: #10b981; }
 QPushButton#btn_warn { background-color: #b45309; }
@@ -334,7 +334,7 @@ QScrollBar::handle:vertical {
     border-radius: 4px;
     min-height: 20px;
 }
-QScrollBar::handle:vertical:hover { background-color: #4b5563; }
+QScrollBar::handle:vertical:hover { background-color: #9aa8b8; }
 QScrollBar:horizontal {
     background-color: #1a1b2e;
     height: 8px;
@@ -344,15 +344,16 @@ QScrollBar::handle:horizontal {
     border-radius: 4px;
     min-width: 20px;
 }
-QScrollBar::handle:horizontal:hover { background-color: #4b5563; }
+QScrollBar::handle:horizontal:hover { background-color: #9aa8b8; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 QProgressBar {
     background-color: #1f2937;
     border: 1px solid #374151;
     border-radius: 3px;
     text-align: center;
-    color: transparent;
-    max-height: 6px;
+    color: #e5e7eb;
+    min-height: 10px;
+    max-height: 14px;
 }
 QProgressBar::chunk { background-color: #3b82f6; border-radius: 3px; }
 """
@@ -1209,6 +1210,8 @@ class HAPToCarrierApp(QMainWindow):
     # ──────────────────────────────────────────────────────────────
     def _build_ui(self):
         self.setStyleSheet(DARK_STYLESHEET)
+        self.setAccessibleName("Carrier AC Selector")
+        self.setAccessibleDescription("HVAC load analysis, equipment selection, and CAD workflow")
 
         # Help menu: users can manually check for published GitHub releases.
         help_menu = self.menuBar().addMenu("Help")
@@ -1242,17 +1245,15 @@ class HAPToCarrierApp(QMainWindow):
         logo = QLabel("CARRIER")
         logo.setObjectName("brand_mark")
         header_layout.addWidget(logo)
-        project = QLabel("HVAC Design Studio  /  New Cairo Office Building")
-        project.setObjectName("project_name")
-        header_layout.addWidget(project)
-        saved = QLabel("●  Saved")
-        saved.setObjectName("save_state")
-        header_layout.addWidget(saved)
+        self.project_name_label = QLabel("Untitled Project")
+        self.project_name_label.setObjectName("project_name")
+        self.project_name_label.setAccessibleName("Current project")
+        header_layout.addWidget(self.project_name_label)
+        self.save_state_label = QLabel("●  No project saved")
+        self.save_state_label.setObjectName("save_state")
+        self.save_state_label.setAccessibleName("Project save state")
+        header_layout.addWidget(self.save_state_label)
         header_layout.addStretch()
-        for label in ("Undo", "Redo", "Settings"):
-            button = QPushButton(label)
-            button.setObjectName("header_button")
-            header_layout.addWidget(button)
         root_layout.addWidget(header)
 
         ribbon = QFrame()
@@ -1363,7 +1364,7 @@ class HAPToCarrierApp(QMainWindow):
 
         subtitle = QLabel(f"HAP Report Analyzer  •  v{APP_VERSION}")
         subtitle.setAlignment(Qt.AlignCenter)
-        subtitle.setStyleSheet("color: #6b7280; font-size: 11px;")
+        subtitle.setStyleSheet("color: #9aa8b8; font-size: 11px;")
         layout.addWidget(subtitle)
 
         # Upload button
@@ -1385,7 +1386,7 @@ class HAPToCarrierApp(QMainWindow):
         self.lbl_image.setAlignment(Qt.AlignCenter)
         self.lbl_image.setFixedHeight(210)
         self.lbl_image.setStyleSheet(
-            "color: #4b5563; border: 2px dashed #374151; border-radius: 6px;"
+            "color: #9aa8b8; border: 2px dashed #374151; border-radius: 6px;"
         )
         img_lyt.addWidget(self.lbl_image)
         layout.addWidget(img_grp)
@@ -1584,7 +1585,7 @@ class HAPToCarrierApp(QMainWindow):
         results_lyt.setSpacing(4)
 
         self.lbl_count = QLabel("No results yet — upload a HAP report to begin.")
-        self.lbl_count.setStyleSheet("color: #6b7280; font-size: 12px; padding: 2px 4px;")
+        self.lbl_count.setStyleSheet("color: #9aa8b8; font-size: 12px; padding: 2px 4px;")
         results_lyt.addWidget(self.lbl_count)
 
         # ── Best-Unit picker ─────────────────────────────
@@ -1668,7 +1669,7 @@ class HAPToCarrierApp(QMainWindow):
             "Then use “Export Selected”."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: #6b7280; font-size: 11px; padding: 2px 4px;")
+        hint.setStyleSheet("color: #9aa8b8; font-size: 11px; padding: 2px 4px;")
         results_lyt.addWidget(hint)
 
         self.tab_results = results_tab
@@ -1683,7 +1684,7 @@ class HAPToCarrierApp(QMainWindow):
             "the minimum number of identical units needed."
         )
         self.lbl_multi_hint.setWordWrap(True)
-        self.lbl_multi_hint.setStyleSheet("color: #6b7280; font-size: 12px; padding: 2px 4px;")
+        self.lbl_multi_hint.setStyleSheet("color: #9aa8b8; font-size: 12px; padding: 2px 4px;")
         multi_lyt.addWidget(self.lbl_multi_hint)
 
         self.table_multi = QTableWidget()
@@ -1730,7 +1731,7 @@ class HAPToCarrierApp(QMainWindow):
             "detected automatically and the best unit is picked for each.")
         self.lbl_batch_hint.setWordWrap(True)
         self.lbl_batch_hint.setStyleSheet(
-            "color: #6b7280; font-size: 12px; padding: 2px 4px;")
+            "color: #9aa8b8; font-size: 12px; padding: 2px 4px;")
         batch_lyt.addWidget(self.lbl_batch_hint)
 
         # ── Navigation row: Prev / Next / position / View Results ──
@@ -1805,7 +1806,7 @@ class HAPToCarrierApp(QMainWindow):
             "عشان تضيفها هنا.")
         self.lbl_selected_hint.setWordWrap(True)
         self.lbl_selected_hint.setStyleSheet(
-            "color: #6b7280; font-size: 12px; padding: 2px 4px;")
+            "color: #9aa8b8; font-size: 12px; padding: 2px 4px;")
         selected_lyt.addWidget(self.lbl_selected_hint)
 
         self.table_selected = QTableWidget()
@@ -1890,7 +1891,7 @@ class HAPToCarrierApp(QMainWindow):
         debug_lyt = QVBoxLayout(debug_tab)
         debug_lyt.setContentsMargins(0, 4, 0, 0)
         lbl_debug = QLabel("Raw Tesseract output — useful for diagnosing extraction failures:")
-        lbl_debug.setStyleSheet("color: #6b7280; font-size: 12px; padding: 2px 4px;")
+        lbl_debug.setStyleSheet("color: #9aa8b8; font-size: 12px; padding: 2px 4px;")
         debug_lyt.addWidget(lbl_debug)
         self.txt_debug = QTextEdit()
         self.txt_debug.setReadOnly(True)
@@ -1942,7 +1943,7 @@ class HAPToCarrierApp(QMainWindow):
             "No CAD file loaded — upload a DWG or DXF floor plan to begin."
         )
         self.lbl_cad_landing_status.setWordWrap(True)
-        self.lbl_cad_landing_status.setStyleSheet("color: #6b7280; padding: 4px 0;")
+        self.lbl_cad_landing_status.setStyleSheet("color: #9aa8b8; padding: 4px 0;")
         card_layout.addWidget(self.lbl_cad_landing_status)
         self.cad_progress = QProgressBar()
         self.cad_progress.setRange(0, 100)
@@ -2212,8 +2213,24 @@ class HAPToCarrierApp(QMainWindow):
         self.cad_dirty = bool(dirty)
         if hasattr(self, "cad_workspace"):
             self.cad_workspace.save_button.setEnabled(self.cad_document is not None)
+        source = self.cad_save_path or self.cad_source_path or self.hap_source_path
+        project_name = Path(source).stem if source else "Untitled Project"
+        if hasattr(self, "project_name_label"):
+            self.project_name_label.setText(project_name)
+            self.project_name_label.setToolTip(str(source) if source else "No project file is currently open")
+        if hasattr(self, "save_state_label"):
+            if self.cad_dirty:
+                state, color = "●  Unsaved CAD edits", "#f59e0b"
+            elif self.cad_save_path:
+                state, color = "●  CAD saved", "#22c55e"
+            elif self.cad_document is not None or self.hap_source_path:
+                state, color = "●  Loaded · not saved as project", "#93c5fd"
+            else:
+                state, color = "●  No project saved", "#9aa8b8"
+            self.save_state_label.setText(state)
+            self.save_state_label.setStyleSheet(f"color: {color}; font-weight: 600;")
         marker = "*" if self.cad_dirty else ""
-        self.setWindowTitle(f"Carrier AC Selector{marker}")
+        self.setWindowTitle(f"Carrier AC Selector — {project_name}{marker}")
 
     def save_cad(self) -> None:
         """Save the edited CAD to a safe sibling file, never over the source."""
@@ -2737,6 +2754,7 @@ class HAPToCarrierApp(QMainWindow):
     def _load_report(self, path: str):
         """Load a HAP report from `path` (dialog + drag-and-drop share this)."""
         self.hap_source_path = path
+        self._set_cad_dirty(self.cad_dirty)
         self.cad_room_systems.clear()
         self.cad_room_selections.clear()
         self.cad_room_loads = {
@@ -4239,6 +4257,14 @@ class HAPToCarrierApp(QMainWindow):
         doc.save(path)
 
     def clear_all(self):
+        if self.current_results is not None or self.systems or self.selected_units:
+            answer = QMessageBox.question(
+                self, "Clear Analysis",
+                "Clear the current HAP analysis and selection cart? This cannot be undone.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
         self._ocr_job_id = getattr(self, "_ocr_job_id", 0) + 1
         self.progress_bar.setVisible(False)
         self.btn_upload.setEnabled(True)
@@ -4253,6 +4279,8 @@ class HAPToCarrierApp(QMainWindow):
         self.systems          = []
         self.batch_results    = None
         self.selected_units   = {}
+        self.hap_source_path = ""
+        self._set_cad_dirty(self.cad_dirty)
 
         self.lbl_image.clear()
         self.lbl_image.setText("No image loaded")
@@ -4287,7 +4315,7 @@ class HAPToCarrierApp(QMainWindow):
             "When no single unit covers the required load, this tab suggests "
             "the minimum number of identical units needed.")
         self.lbl_count.setText("No results yet — upload a HAP report to begin.")
-        self.lbl_count.setStyleSheet("color: #6b7280; font-size: 12px; padding: 2px 4px;")
+        self.lbl_count.setStyleSheet("color: #9aa8b8; font-size: 12px; padding: 2px 4px;")
         self.btn_export.setEnabled(False)
         self.btn_export_sel.setEnabled(False)
         self._render_selected_table()

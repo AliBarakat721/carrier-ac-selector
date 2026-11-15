@@ -207,7 +207,7 @@ QLabel#save_state { color: #24b889; font-size: 12px; padding-left: 12px; }
 QPushButton#header_button { background: transparent; color: #9aa8b8; padding: 5px 9px; font-weight: normal; }
 QPushButton#header_button:hover { color: #e6edf5; background: #252f3b; }
 QFrame#ribbon { background-color: #202833; border-bottom: 1px solid #354252; }
-QPushButton#ribbon_button { background: transparent; color: #9aa8b8; border-radius: 3px; padding: 7px 10px; font-weight: 600; }
+QPushButton#ribbon_button { background: transparent; color: #9aa8b8; border-radius: 5px; padding: 7px 18px; font-weight: 700; }
 QPushButton#ribbon_button:hover, QPushButton#ribbon_button:checked { background: #2d4055; color: #e6edf5; }
 QTabWidget#workspace_tabs::pane { border: none; }
 QTabWidget#workspace_tabs QTabBar::tab { background: #202833; color: #9aa8b8; padding: 8px 16px; border: none; }
@@ -1262,11 +1262,11 @@ class HAPToCarrierApp(QMainWindow):
         ribbon_layout.setContentsMargins(14, 5, 14, 5)
         ribbon_layout.setSpacing(4)
         self.ribbon_buttons = {}
-        for label in ("File", "Home", "Draw", "Modify", "Architecture", "HVAC", "Equipment", "HAP", "Analysis", "Annotate", "View", "Export"):
+        for label in ("Design", "Select", "Analyze", "Tools"):
             button = QPushButton(label)
             button.setObjectName("ribbon_button")
             button.setCheckable(True)
-            if label == "Home":
+            if label == "Design":
                 button.setChecked(True)
             button.clicked.connect(
                 lambda _checked=False, section=label: self._navigate_ribbon(section)
@@ -1280,6 +1280,7 @@ class HAPToCarrierApp(QMainWindow):
         self.workspace_tabs.setObjectName("workspace_tabs")
         self.workspace_tabs.setDocumentMode(True)
         self.workspace_tabs.setTabPosition(QTabWidget.North)
+        self.workspace_tabs.tabBar().hide()
 
         self.cad_workspace = CadWorkspace(Path(self._app_dir))
         self.cad_workspace.request_open.connect(self.upload_cad)
@@ -1288,7 +1289,7 @@ class HAPToCarrierApp(QMainWindow):
         self.cad_workspace.request_save.connect(self.save_cad)
         self.cad_workspace.request_save_as.connect(self.save_cad_as)
         self.cad_workspace.dirty_changed.connect(self._set_cad_dirty)
-        self.workspace_tabs.addTab(self.cad_workspace, "CAD Workspace")
+        self.workspace_tabs.addTab(self.cad_workspace, "Design")
 
         self.selection_workspace = SelectionWorkspace(Path(self._app_dir))
         self.selection_workspace.model_requested.connect(
@@ -1298,7 +1299,7 @@ class HAPToCarrierApp(QMainWindow):
             lambda: self.workspace_tabs.setCurrentWidget(self.analyzer_workspace)
         )
         self.selection_workspace.set_catalog(self.df, self.selected_units)
-        self.workspace_tabs.addTab(self.selection_workspace, "Selection Workspace")
+        self.workspace_tabs.addTab(self.selection_workspace, "Select")
 
         # Existing analyzer remains intact and is now deliberately presented as
         # an engineering workspace instead of competing with the CAD canvas.
@@ -1312,7 +1313,10 @@ class HAPToCarrierApp(QMainWindow):
         analyzer_splitter.addWidget(self._build_right_panel())
         analyzer_splitter.setSizes([300, 980])
         analyzer_layout.addWidget(analyzer_splitter)
-        self.workspace_tabs.addTab(analyzer_page, "HAP & Equipment Analyzer")
+        self.workspace_tabs.addTab(analyzer_page, "Analyze")
+        if getattr(self, "tools_workspace", None) is not None:
+            self.workspace_tabs.addTab(self.tools_workspace, "Tools")
+        self.workspace_tabs.currentChanged.connect(self._sync_workspace_navigation)
         self.workspace_tabs.setCurrentIndex(0)
         root_layout.addWidget(self.workspace_tabs, 1)
         self.setCentralWidget(root)
@@ -1320,25 +1324,22 @@ class HAPToCarrierApp(QMainWindow):
     def _navigate_ribbon(self, section: str) -> None:
         """Show the functional workspace associated with a ribbon section."""
         workspace_by_section = {
-            "File": self.cad_workspace,
-            "Home": self.selection_workspace,
-            "Draw": self.cad_workspace,
-            "Modify": self.cad_workspace,
-            "Architecture": self.cad_workspace,
-            "HVAC": self.analyzer_workspace,
-            "Equipment": self.selection_workspace,
-            "HAP": self.analyzer_workspace,
-            "Analysis": self.analyzer_workspace,
-            "Annotate": self.cad_workspace,
-            "View": self.cad_workspace,
-            "Export": self.cad_workspace,
+            "Design": self.cad_workspace,
+            "Select": self.selection_workspace,
+            "Analyze": self.analyzer_workspace,
+            "Tools": getattr(self, "tools_workspace", self.analyzer_workspace),
         }
         workspace = workspace_by_section.get(section)
         if workspace is None:
             return
         self.workspace_tabs.setCurrentWidget(workspace)
+        self._sync_workspace_navigation(self.workspace_tabs.currentIndex())
+
+    def _sync_workspace_navigation(self, index: int) -> None:
+        """Keep the segmented workspace switcher in sync with tab changes."""
+        current = self.workspace_tabs.tabText(index) if index >= 0 else ""
         for label, button in self.ribbon_buttons.items():
-            button.setChecked(label == section)
+            button.setChecked(label == current or (label == "Analyze" and current.startswith("Analyze")))
 
     # ── Left panel ─────────────────────────────────────────────
     def _build_left_panel(self) -> QScrollArea:
@@ -1575,8 +1576,17 @@ class HAPToCarrierApp(QMainWindow):
 
         layout.addWidget(filter_grp)
 
-        # ── Tabs: Results | OCR Debug ──────────────────────────
+        # Analysis owns selection outputs; independent calculators and
+        # diagnostics live in the app-level Tools workspace below.
         self.tabs = QTabWidget()
+        self.tools_workspace = QWidget()
+        tools_layout = QVBoxLayout(self.tools_workspace)
+        tools_layout.setContentsMargins(10, 8, 10, 8)
+        tools_heading = QLabel("Engineering tools & diagnostics")
+        tools_heading.setObjectName("workspace_title")
+        tools_layout.addWidget(tools_heading)
+        self.tools_tabs = QTabWidget()
+        tools_layout.addWidget(self.tools_tabs, 1)
 
         # ── Results tab ────────────────────────────────────────
         results_tab = QWidget()
@@ -1854,10 +1864,6 @@ class HAPToCarrierApp(QMainWindow):
         self.tab_selected = selected_tab
         self.tabs.addTab(selected_tab, "🛒  Selected (0)")
 
-        # ── CAD + HAP workflow tab ─────────────────────────────
-        self.cad_tab = self._build_cad_tab()
-        self.tabs.addTab(self.cad_tab, "📐  CAD Start")
-
         # ── Keyboard shortcuts for Systems navigation ──
         # Scoped to the Systems table so they don't fire elsewhere.
         self._nav_shortcut_prev = QShortcut(
@@ -1875,14 +1881,14 @@ class HAPToCarrierApp(QMainWindow):
         # ── Inverter ROI tab ───────────────────────────────────
         if ROI_AVAILABLE:
             self.roi_calculator = InverterROICalculator()
-            self.tabs.addTab(self.roi_calculator, "⚡  Inverter ROI")
+            self.tools_tabs.addTab(self.roi_calculator, "Inverter ROI")
         else:
             self.roi_calculator = None
 
         # ── Electrical Load tab ────────────────────────────────
         if ELEC_AVAILABLE:
             self.electrical_tab = ElectricalScheduleTab()
-            self.tabs.addTab(self.electrical_tab, "🔌  Electrical")
+            self.tools_tabs.addTab(self.electrical_tab, "Electrical")
         else:
             self.electrical_tab = None
 
@@ -1898,10 +1904,16 @@ class HAPToCarrierApp(QMainWindow):
         self.txt_debug.setPlaceholderText("OCR text will appear here after uploading…")
         debug_lyt.addWidget(self.txt_debug)
         self.tab_debug = debug_tab
-        self.tabs.addTab(debug_tab, "🔍  OCR Debug")
+        self.tools_tabs.addTab(debug_tab, "OCR Diagnostics")
 
         layout.addWidget(self.tabs)
         return panel
+
+    def _open_tool(self, widget=None) -> None:
+        """Show the Tools workspace and optionally select one of its tools."""
+        if widget is not None and self.tools_tabs.indexOf(widget) >= 0:
+            self.tools_tabs.setCurrentWidget(widget)
+        self.workspace_tabs.setCurrentWidget(self.tools_workspace)
 
     def _build_cad_tab(self):
         tab = QWidget()
@@ -2097,6 +2109,7 @@ class HAPToCarrierApp(QMainWindow):
             tab_name = tab_name[:25] + "..."
         self.tabs.addTab(self.cad_workspace_tab, f"🗺  {tab_name}")
         self.tabs.setCurrentWidget(self.cad_workspace_tab)
+        self.workspace_tabs.setCurrentWidget(self.analyzer_workspace)
 
     def _load_cad(self, path: str):
         previous = self._cad_worker
@@ -2873,7 +2886,7 @@ class HAPToCarrierApp(QMainWindow):
                 "then click Confirm & Search.")
             self.lbl_ocr_status.setStyleSheet(amber)
             self._set_status("⚠  OCR failed — enter values manually and confirm.")
-            self.tabs.setCurrentWidget(self.tab_debug)
+            self._open_tool(self.tab_debug)
             return
 
         self._update_extracted_labels()

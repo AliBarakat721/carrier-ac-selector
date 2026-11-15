@@ -72,6 +72,7 @@ from .room_matching import (
     match_rooms_to_systems,
     normalize_name,
 )
+from .validation import CadValidationReport, ValidationIssue, validate_cad_design
 
 __all__ = [
     "CadDocument",
@@ -137,4 +138,7 @@ __all__ = [
     "MatchingResult",
     "match_rooms_to_systems",
     "normalize_name",
+    "CadValidationReport",
+    "ValidationIssue",
+    "validate_cad_design",
 ]

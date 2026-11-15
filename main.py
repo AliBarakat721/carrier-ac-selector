@@ -48,6 +48,7 @@ from cad.room_review import RoomReviewSession
 from cad.parallel_tasks import detect_rooms_task, summarize_document_task
 from room_review_dialog import RoomReviewDialog
 from cad.workflow import RoomAssignment, build_indoor_placements, match_room_systems
+from cad.validation import validate_cad_design
 from integration.models import RoomLoadInput
 from integration.hap_zone_parser import HAPZoneSpaceData, parse_hap_zone_summaries
 from integration.selection_adapter import select_for_room
@@ -2650,6 +2651,29 @@ class HAPToCarrierApp(QMainWindow):
         if not indoor:
             QMessageBox.warning(self, "No Indoor Units", "Enter verified room loads and airflow, then review room-to-system links.")
             return
+        validation = validate_cad_design(
+            self.cad_document,
+            self.cad_rooms,
+            indoor_units=indoor,
+            diagnostics=self.cad_diagnostics,
+        )
+        if validation.blocking:
+            QMessageBox.warning(
+                self,
+                "CAD Validation Failed",
+                validation.to_text() + "\n\nResolve the errors before exporting.",
+            )
+            return
+        if validation.warnings:
+            answer = QMessageBox.question(
+                self,
+                "CAD Validation Warnings",
+                validation.to_text() + "\n\nExport despite these warnings?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
         output, _ = QFileDialog.getSaveFileName(
             self, "Export HVAC DXF", "hvac_placed.dxf", "DXF Files (*.dxf)"
         )

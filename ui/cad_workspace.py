@@ -134,6 +134,7 @@ class CadViewport(QGraphicsView):
     entity_transform_requested = Signal(object, str, float)
     action_undone = Signal()
     prompt_changed = Signal(str)
+    measurement_changed = Signal(float, float)
 
     def __init__(self, project_root: Path, parent=None):
         super().__init__(parent)
@@ -154,6 +155,10 @@ class CadViewport(QGraphicsView):
         self._preview_item = None
         self._cursor_world_point = None
         self._transform_value = 0.0
+        self._snap_enabled = True
+        self._ortho_enabled = False
+        self._snap_points = []
+        self._measurement_item = None
         self._render_token = 0
         self._draw_grid()
 
@@ -162,6 +167,8 @@ class CadViewport(QGraphicsView):
         self._pending_point = None
         self._move_entity = None
         self._clear_preview()
+        if mode != "measure":
+            self._clear_measurement()
         prompts = {
             "select": "Select · click a CAD entity or room",
             "line": "Draw line · click start, then end",
@@ -172,8 +179,39 @@ class CadViewport(QGraphicsView):
             "scale": "Scale · click a CAD entity to apply the chosen factor",
             "delete": "Delete · click an entity (rooms are protected)",
             "undo": "Undo last CAD edit",
+            "measure": "Measure · click two points",
         }
         self.prompt_changed.emit(prompts.get(mode, "Select mode"))
+
+    def set_snap_enabled(self, enabled: bool):
+        self._snap_enabled = bool(enabled)
+        self.prompt_changed.emit(f"SNAP {'ON' if self._snap_enabled else 'OFF'}")
+
+    def set_ortho_enabled(self, enabled: bool):
+        self._ortho_enabled = bool(enabled)
+        self.prompt_changed.emit(f"ORTHO {'ON' if self._ortho_enabled else 'OFF'}")
+
+    def _clear_measurement(self):
+        if self._measurement_item is not None:
+            for item in self._measurement_item:
+                self.scene.removeItem(item)
+            self._measurement_item = None
+
+    def _world_point(self, event, anchor=None):
+        point = self.mapToScene(event.position().toPoint())
+        value = (float(point.x()), -float(point.y()))
+        if self._snap_enabled and self._snap_points:
+            threshold = max(abs(self.mapToScene(12, 0).x() - self.mapToScene(0, 0).x()), 1e-6)
+            nearest = min(
+                self._snap_points,
+                key=lambda candidate: math.hypot(candidate[0] - value[0], candidate[1] - value[1]),
+            )
+            if math.hypot(nearest[0] - value[0], nearest[1] - value[1]) <= threshold:
+                value = nearest
+        if anchor is not None and self._ortho_enabled:
+            dx, dy = abs(value[0] - anchor[0]), abs(value[1] - anchor[1])
+            value = (value[0], anchor[1]) if dx < dy else (anchor[0], value[1])
+        return value
 
     def set_layer_visible(self, layer: str, visible: bool):
         for item in self._layer_items.get(layer, []):
@@ -213,12 +251,28 @@ class CadViewport(QGraphicsView):
         self._room_items.clear()
         self._layer_items.clear()
         self._preview_item = None
+        self._snap_points = []
+        self._measurement_item = None
         self._draw_grid()
 
     def render_document(self, document, rooms: Iterable[object] = ()):
         self._render_token += 1
         self.clear_document()
         self._rooms = list(rooms)
+        for room in self._rooms:
+            self._snap_points.extend(
+                (float(x), float(y)) for x, y in room.polygon.exterior.coords
+            )
+        if document:
+            for entity in document.entities:
+                data = entity.data
+                for key in ("start", "end", "center", "insert"):
+                    point = data.get(key)
+                    if point is not None:
+                        self._snap_points.append((float(point[0]), float(point[1])))
+                self._snap_points.extend(
+                    (float(x), float(y)) for x, y in data.get("points", [])
+                )
         self._render_entities(document.entities if document else [])
         geometry_rect = self.scene.itemsBoundingRect()
         if geometry_rect.isValid() and geometry_rect.width() > 0 and geometry_rect.height() > 0:
@@ -351,6 +405,20 @@ class CadViewport(QGraphicsView):
         self.clear_document()
         token = self._render_token
         self._rooms = list(rooms)
+        for room in self._rooms:
+            self._snap_points.extend(
+                (float(x), float(y)) for x, y in room.polygon.exterior.coords
+            )
+        if document:
+            for entity in document.entities:
+                data = entity.data
+                for key in ("start", "end", "center", "insert"):
+                    point = data.get(key)
+                    if point is not None:
+                        self._snap_points.append((float(point[0]), float(point[1])))
+                self._snap_points.extend(
+                    (float(x), float(y)) for x, y in data.get("points", [])
+                )
         self._render_entities_queue = list(document.entities if document else [])
         self._render_text_queue = []
         self._render_rooms_queue = self._rooms
@@ -472,9 +540,8 @@ class CadViewport(QGraphicsView):
             self._preview_item = None
 
     def mouseMoveEvent(self, event):
-        point = self.mapToScene(event.position().toPoint())
-        self._cursor_world_point = (float(point.x()), -float(point.y()))
-        if self._mode in {"line", "rectangle", "circle"} and self._pending_point is not None:
+        self._cursor_world_point = self._world_point(event, self._pending_point)
+        if self._mode in {"line", "rectangle", "circle", "measure"} and self._pending_point is not None:
             self._update_drawing_preview(self._pending_point, self._cursor_world_point)
         super().mouseMoveEvent(event)
 
@@ -485,7 +552,7 @@ class CadViewport(QGraphicsView):
         path = QPainterPath()
         if math.isclose(x1, x2) and math.isclose(y1, y2):
             path.addEllipse(QPointF(x1, -y1), 3.5, 3.5)
-        elif self._mode == "line":
+        elif self._mode in {"line", "measure"}:
             path.moveTo(x1, -y1)
             path.lineTo(x2, -y2)
         elif self._mode == "rectangle":
@@ -499,9 +566,8 @@ class CadViewport(QGraphicsView):
         self._preview_item.setZValue(1000)
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton and self._mode in {"line", "rectangle", "circle"}:
-            point = self.mapToScene(event.position().toPoint())
-            world_point = (float(point.x()), -float(point.y()))
+        if event.button() == Qt.LeftButton and self._mode in {"line", "rectangle", "circle", "measure"}:
+            world_point = self._world_point(event, self._pending_point)
             if self._pending_point is None:
                 self._pending_point = world_point
                 self.prompt_changed.emit("First point set · click the second point to finish")
@@ -514,6 +580,19 @@ class CadViewport(QGraphicsView):
                 if math.isclose(x1, x2) and math.isclose(y1, y2):
                     self.prompt_changed.emit("Choose a different second point")
                     self._pending_point = first
+                    return
+                if self._mode == "measure":
+                    distance = math.hypot(x2 - x1, y2 - y1)
+                    angle = math.degrees(math.atan2(y2 - y1, x2 - x1))
+                    pen = QPen(QColor("#d97706"), 2.0, Qt.DashLine)
+                    pen.setCosmetic(True)
+                    line = self.scene.addLine(x1, -y1, x2, -y2, pen)
+                    label = self.scene.addSimpleText(f"{distance:.3f}  |  {angle:.1f}°")
+                    label.setBrush(QBrush(QColor("#92400e")))
+                    label.setPos((x1 + x2) / 2, -(y1 + y2) / 2)
+                    self._measurement_item = (line, label)
+                    self.measurement_changed.emit(distance, angle)
+                    self.prompt_changed.emit(f"Distance {distance:.3f} · angle {angle:.1f}°")
                     return
                 if self._mode == "line":
                     entity = CadEntity("LINE", "MANUS_DRAWN", None, {"start": first, "end": world_point})
@@ -806,6 +885,7 @@ class CadWorkspace(QWidget):
         tool_row.addWidget(QLabel("TOOLS"))
         self.tool_buttons = {}
         for mode, label, icon_name in (
+            ("measure", "Measure", "distance_point_to_point"),
             ("line", "Draw line", "line_2p"),
             ("rectangle", "Rectangle", "line_rectangle"),
             ("circle", "Circle", "circle_center_point"),
@@ -840,6 +920,15 @@ class CadWorkspace(QWidget):
             self.tool_buttons[mode] = tool
             tool_row.addWidget(tool)
         tool_row.addStretch()
+        self.snap_button = QPushButton("Snap")
+        self.snap_button.setCheckable(True)
+        self.snap_button.setChecked(True)
+        self.snap_button.toggled.connect(self.viewport.set_snap_enabled)
+        tool_row.addWidget(self.snap_button)
+        self.ortho_button = QPushButton("Ortho")
+        self.ortho_button.setCheckable(True)
+        self.ortho_button.toggled.connect(self.viewport.set_ortho_enabled)
+        tool_row.addWidget(self.ortho_button)
         toolbar_layout.addLayout(tool_row)
         root.addWidget(toolbar)
         splitter = QSplitter(Qt.Horizontal)
@@ -1034,6 +1123,7 @@ class CadWorkspace(QWidget):
         self.export_button.setText("Export" if compact else "Export HVAC DXF")
         for mode, button in self.tool_buttons.items():
             button.setText("" if compact else {
+                "measure": "Measure",
                 "line": "Draw line", "rectangle": "Rectangle", "circle": "Circle",
                 "move": "Move", "rotate": "Rotate", "scale": "Scale",
                 "delete": "Delete", "undo": "Undo", "select": "Select",

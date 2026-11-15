@@ -33,15 +33,19 @@ def _configure_converter() -> str | None:
     return executable
 
 
-def read_cad_file(path: str | Path) -> CadDocument:
-    """Load a DXF directly or convert a DWG temporarily before reading it."""
+def read_cad_file_with_raw(path: str | Path) -> tuple[CadDocument, object]:
+    """Load CAD and return both the neutral model and its raw DXF drawing.
+
+    The raw drawing stays in memory so edits made in the CAD workspace can be
+    applied to the export without ever modifying the original source file.
+    """
     source = Path(path).expanduser()
     if not source.is_file():
         raise FileNotFoundError(f"CAD file not found: {source}")
 
     suffix = source.suffix.lower()
     if suffix == ".dxf":
-        return read_dxf(source)
+        return read_dxf(source), ezdxf.readfile(source)
     if suffix != ".dwg":
         raise ValueError(
             f"Unsupported CAD format: {source.suffix or '(no extension)'}. "
@@ -87,10 +91,11 @@ def read_cad_file(path: str | Path) -> CadDocument:
                     "installed ODA File Converter version."
                 )
 
+            raw_dxf = ezdxf.readfile(converted)
             document = read_dxf(converted)
             # Preserve the original source path in the in-memory model.
             document.path = source
-            return document
+            return document, raw_dxf
     except DwgImportError:
         raise
     except Exception as exc:
@@ -98,3 +103,12 @@ def read_cad_file(path: str | Path) -> CadDocument:
             f"Could not convert '{source.name}' to DXF. Verify that ODA File "
             f"Converter is installed and that the drawing is valid. Details: {exc}"
         ) from exc
+
+
+def read_cad_file(path: str | Path) -> CadDocument:
+    """Backward-compatible loader returning only the neutral CAD model."""
+    source = Path(path).expanduser()
+    if source.suffix.lower() == ".dxf":
+        return read_dxf(source)
+    document, _raw_dxf = read_cad_file_with_raw(path)
+    return document

@@ -43,7 +43,7 @@ import core
 import ocr_engine
 import updater
 from cad.dxf_exporter import export_hvac_dxf
-from cad.importer import read_cad_file
+from cad.importer import read_cad_file_with_raw
 from cad.room_review import RoomReviewSession
 from cad.parallel_tasks import detect_rooms_task, summarize_document_task
 from room_review_dialog import RoomReviewDialog
@@ -416,7 +416,7 @@ class UpdateWorker(QThread):
 class CADImportWorker(QThread):
     """Load CAD in a QThread and parallelize CPU-heavy analysis."""
 
-    loaded = Signal(int, object, object, object)
+    loaded = Signal(int, object, object, object, object)
     error = Signal(int, str)
     progress = Signal(int, int, str)
 
@@ -442,7 +442,7 @@ class CADImportWorker(QThread):
                 "Converting DWG to DXF…" if suffix == ".dwg"
                 else "Reading CAD entities…",
             )
-            document = read_cad_file(self.source_path)
+            document, raw_dxf_document = read_cad_file_with_raw(self.source_path)
             if self._cancel_event.is_set():
                 return
 
@@ -458,7 +458,9 @@ class CADImportWorker(QThread):
                     return
                 self._emit_progress(95, "Finalizing CAD review data…")
                 session = RoomReviewSession(document=document, report=report)
-                self.loaded.emit(self.job_id, document, session, summary)
+                self.loaded.emit(
+                    self.job_id, document, session, summary, raw_dxf_document
+                )
                 return
 
             executor = ProcessPoolExecutor(max_workers=2)
@@ -482,7 +484,9 @@ class CADImportWorker(QThread):
                 return
             session = RoomReviewSession(document=document, report=report)
             self._emit_progress(95, "Finalizing CAD review data…")
-            self.loaded.emit(self.job_id, document, session, summary)
+            self.loaded.emit(
+                self.job_id, document, session, summary, raw_dxf_document
+            )
         except Exception as exc:
             logger.exception("CAD import failed for %s", self.source_path)
             if not self._cancel_event.is_set():
@@ -1101,6 +1105,7 @@ class HAPToCarrierApp(QMainWindow):
         self.cad_matching = None          # MatchingResult for the current rooms/systems
         self.cad_review_session = None   # RoomReviewSession for the loaded drawing
         self.cad_workspace_tab = None
+        self.cad_raw_dxf = None
 
         self._build_ui()
         self.setAcceptDrops(True)
@@ -1275,6 +1280,7 @@ class HAPToCarrierApp(QMainWindow):
         self.cad_workspace = CadWorkspace(Path(self._app_dir))
         self.cad_workspace.request_open.connect(self.upload_cad)
         self.cad_workspace.request_export.connect(self.export_cad_workflow)
+        self.cad_workspace.geometry_changed.connect(self._on_cad_geometry_changed)
         self.workspace_tabs.addTab(self.cad_workspace, "CAD Workspace")
 
         self.selection_workspace = SelectionWorkspace(Path(self._app_dir))
@@ -2143,7 +2149,9 @@ class HAPToCarrierApp(QMainWindow):
         if landing is not None:
             landing.setText(message)
 
-    def _on_cad_loaded(self, job_id: int, document, session, summary):
+    def _on_cad_loaded(
+        self, job_id: int, document, session, summary, raw_dxf_document
+    ):
         if job_id != self._cad_job_id:
             return
         path = self._cad_loading_path
@@ -2154,6 +2162,7 @@ class HAPToCarrierApp(QMainWindow):
         self._set_cad_loading(False)
         self.cad_source_path = path
         self.cad_document = document
+        self.cad_raw_dxf = raw_dxf_document
         self.cad_room_systems.clear()
         self.cad_room_loads.clear()
         self.cad_room_selections.clear()
@@ -2168,6 +2177,27 @@ class HAPToCarrierApp(QMainWindow):
             self.lbl_cad_landing_status.setText(
                 f"Workspace opened for {os.path.basename(path)}. "
                 "Review the detected rooms in the CAD tab before exporting."
+            )
+
+    def _on_cad_geometry_changed(self, document) -> None:
+        """Re-detect rooms after a CAD edit without losing review settings."""
+        session = self.cad_review_session
+        if session is None:
+            return
+        try:
+            session.document = document
+            session.refresh()
+            self._apply_cad_review(session)
+            self._set_status(
+                "CAD geometry changed — room boundaries and areas recalculated."
+            )
+        except Exception as exc:
+            logger.exception("CAD room re-detection failed")
+            self._set_status(f"CAD room re-detection failed: {exc}")
+            QMessageBox.warning(
+                self,
+                "CAD Recalculation Error",
+                f"CAD geometry was edited, but room detection failed:\n\n{exc}",
             )
 
     def _on_cad_error(self, job_id: int, message: str):
@@ -2581,6 +2611,8 @@ class HAPToCarrierApp(QMainWindow):
             result = export_hvac_dxf(
                 self.cad_source_path,
                 output,
+                cad_document=self.cad_document,
+                raw_dxf_document=self.cad_raw_dxf,
                 indoor_units=indoor,
                 outdoor_units=[],
                 relationships=relationships,

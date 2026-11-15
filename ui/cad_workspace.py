@@ -688,6 +688,7 @@ class CadWorkspace(QWidget):
     room_selected = Signal(object)
     request_open = Signal()
     request_export = Signal()
+    geometry_changed = Signal(object)
 
     def __init__(self, project_root: Path, parent=None):
         super().__init__(parent)
@@ -885,7 +886,13 @@ class CadWorkspace(QWidget):
 
     def _refresh_after_edit(self):
         self.viewport.render_document(self.document, self.rooms)
-        self.browser.set_project_state(self.document, self.rooms, self.selected_units)
+        self.browser.set_project_state(
+            self.document,
+            self.rooms,
+            self.assignments,
+            self.selected_units,
+        )
+        self.geometry_changed.emit(self.document)
 
     def _add_entity(self, entity):
         if self.document is None:

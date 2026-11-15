@@ -27,13 +27,90 @@ class ExportResult:
     room_count: int
 
 
-def prepare_export_document(source: str | Path) -> ezdxf.document.Drawing:
-    """Load a source DXF into memory; the source file is never modified."""
+def prepare_export_document(source: str | Path | object) -> ezdxf.document.Drawing:
+    """Load a source DXF or use an in-memory raw DXF drawing."""
+
+    if hasattr(source, "modelspace") and hasattr(source, "saveas"):
+        return source
 
     source_path = Path(source)
     if not source_path.is_file():
         raise FileNotFoundError(f"Source DXF file not found: {source_path}")
     return ezdxf.readfile(source_path)
+
+
+def apply_cad_document_edits(document: object, cad_document: object) -> None:
+    """Apply supported workspace edits to an in-memory DXF drawing.
+
+    Direct model-space entities are matched by stable DXF handles. Entities
+    created by the workspace have no handle and are appended. Virtual entities
+    expanded from INSERT blocks are deliberately excluded because their source
+    INSERT remains the authoritative editable entity.
+    """
+    modelspace = document.modelspace()
+    raw_by_handle = {
+        str(entity.dxf.handle): entity
+        for entity in modelspace
+        if entity.dxf.get("handle")
+    }
+    current_direct = {
+        str(entity.handle): entity
+        for entity in cad_document.entities
+        if entity.handle and not entity.source_insert_handles
+    }
+
+    for handle, raw_entity in raw_by_handle.items():
+        if handle not in current_direct:
+            modelspace.delete_entity(raw_entity)
+
+    for handle, cad_entity in current_direct.items():
+        raw_entity = raw_by_handle.get(handle)
+        if raw_entity is None:
+            continue
+        kind = cad_entity.entity_type.upper()
+        data = cad_entity.data
+        if kind == "LINE":
+            raw_entity.dxf.start = tuple(data["start"])
+            raw_entity.dxf.end = tuple(data["end"])
+        elif kind == "CIRCLE":
+            raw_entity.dxf.center = tuple(data["center"])
+            raw_entity.dxf.radius = float(data["radius"])
+        elif kind == "ARC":
+            raw_entity.dxf.center = tuple(data["center"])
+            raw_entity.dxf.radius = float(data["radius"])
+            raw_entity.dxf.start_angle = float(data.get("start_angle", 0.0))
+            raw_entity.dxf.end_angle = float(data.get("end_angle", 360.0))
+        elif kind == "LWPOLYLINE":
+            points = data.get("points", [])
+            bulges = data.get("bulges", [])
+            raw_entity.set_points(
+                [
+                    (*point[:2], 0.0, 0.0,
+                     float(bulges[index]) if index < len(bulges) else 0.0)
+                    for index, point in enumerate(points)
+                ],
+                format="xyseb",
+            )
+            raw_entity.closed = bool(data.get("closed"))
+
+    for cad_entity in cad_document.entities:
+        if cad_entity.handle:
+            continue
+        kind = cad_entity.entity_type.upper()
+        data = cad_entity.data
+        layer = cad_entity.layer or "0"
+        if layer not in document.layers:
+            document.layers.add(layer)
+        if kind == "LINE":
+            modelspace.add_line(data["start"], data["end"], dxfattribs={"layer": layer})
+        elif kind == "CIRCLE":
+            modelspace.add_circle(data["center"], float(data["radius"]), dxfattribs={"layer": layer})
+        elif kind == "LWPOLYLINE":
+            modelspace.add_lwpolyline(
+                data.get("points", []),
+                close=bool(data.get("closed")),
+                dxfattribs={"layer": layer},
+            )
 
 
 def _attribute_values(reference: object) -> dict[str, str]:
@@ -150,7 +227,7 @@ def reopen_and_verify(path: str | Path) -> list[str]:
 
 
 def export_hvac_dxf(
-    source: str | Path,
+    source: str | Path | object,
     output: str | Path,
     *,
     indoor_units: Iterable[Mapping[str, object]],
@@ -158,10 +235,16 @@ def export_hvac_dxf(
     relationships: Iterable[Mapping[str, object]],
     rooms: Iterable[object] = (),
     schedule_path: str | Path | None = None,
+    cad_document: object | None = None,
+    raw_dxf_document: object | None = None,
 ) -> ExportResult:
     """Export approved HVAC entities without changing the original DXF."""
 
-    document = prepare_export_document(source)
+    document = prepare_export_document(
+        raw_dxf_document if raw_dxf_document is not None else source
+    )
+    if cad_document is not None:
+        apply_cad_document_edits(document, cad_document)
     ensure_hvac_layers(document)
     indoor = [dict(item) for item in indoor_units]
     outdoor = [dict(item) for item in outdoor_units]
@@ -198,9 +281,13 @@ def export_hvac_dxf(
         raise ValueError("DXF export validation failed: " + "; ".join(errors))
 
     destination = Path(output)
-    source_path = Path(source)
+    source_path = Path(source) if isinstance(source, (str, Path)) else None
     try:
-        same_file = destination.exists() and destination.resolve() == source_path.resolve()
+        same_file = bool(
+            source_path
+            and destination.exists()
+            and destination.resolve() == source_path.resolve()
+        )
     except OSError:  # pragma: no cover - unreadable path, let the write fail later
         same_file = False
     if same_file and not _is_export_artifact(document):

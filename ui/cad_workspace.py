@@ -63,6 +63,7 @@ LAYER_STYLES = [
     ("text", ("text", "dim", "anno", "note", "tag"), "#374151", None, 1.0),
 ]
 DEFAULT_LAYER_STYLE = ("other", (), "#5a6472", None, 1.0)
+MAX_INTERSECTION_SEGMENTS = 800
 
 
 def layer_style(layer_name: str):
@@ -165,6 +166,7 @@ class CadViewport(QGraphicsView):
         self._snap_points = []
         self._snap_candidates = {"endpoint": [], "midpoint": [], "center": [], "intersection": []}
         self._snap_type = "all"
+        self._intersections_skipped = False
         self._measurement_points = []
         self._validation_statuses = {}
         self._measurement_item = None
@@ -204,7 +206,12 @@ class CadViewport(QGraphicsView):
 
     def set_snap_type(self, snap_type: str):
         self._snap_type = str(snap_type).casefold()
-        self.prompt_changed.emit(f"SNAP TYPE {snap_type}")
+        if self._snap_type == "intersection" and self._intersections_skipped:
+            self.prompt_changed.emit(
+                "Intersection snap disabled for this large drawing · use Endpoint or Midpoint"
+            )
+        else:
+            self.prompt_changed.emit(f"SNAP TYPE {snap_type}")
 
     def set_validation_statuses(self, statuses):
         self._validation_statuses = dict(statuses or {})
@@ -241,6 +248,13 @@ class CadViewport(QGraphicsView):
         point = self.mapToScene(event.position().toPoint())
         value = (float(point.x()), -float(point.y()))
         if self._snap_enabled and self._snap_points:
+            # Do not fall back to scanning every point when global intersection
+            # calculation was intentionally skipped for a large drawing.
+            if self._snap_type == "intersection" and self._intersections_skipped:
+                if anchor is not None and self._ortho_enabled:
+                    dx, dy = abs(value[0] - anchor[0]), abs(value[1] - anchor[1])
+                    value = (value[0], anchor[1]) if dx < dy else (anchor[0], value[1])
+                return value
             threshold = max(abs(self.mapToScene(12, 0).x() - self.mapToScene(0, 0).x()), 1e-6)
             if self._snap_type == "all":
                 snap_points = self._snap_points
@@ -300,19 +314,25 @@ class CadViewport(QGraphicsView):
             ((float(left[0]) + float(right[0])) / 2, (float(left[1]) + float(right[1])) / 2)
             for left, right in segments
         ]
-        for index, (left, right) in enumerate(segments):
-            ax, ay = left
-            bx, by = right
-            for other_left, other_right in segments[index + 1 :]:
-                cx, cy = other_left
-                dx, dy = other_right
-                denominator = (bx - ax) * (dy - cy) - (by - ay) * (dx - cx)
-                if abs(denominator) < 1e-12:
-                    continue
-                t = ((cx - ax) * (dy - cy) - (cy - ay) * (dx - cx)) / denominator
-                u = -((bx - ax) * (cy - ay) - (by - ay) * (cx - ax)) / denominator
-                if 0 <= t <= 1 and 0 <= u <= 1:
-                    candidates["intersection"].append((ax + t * (bx - ax), ay + t * (by - ay)))
+        # Pairwise intersection checks are O(n²) and used to run synchronously
+        # before the incremental renderer started. Keep exact intersections for
+        # modest plans, but skip this optional snap mode on large plans.
+        self._intersections_skipped = len(segments) > MAX_INTERSECTION_SEGMENTS
+        if not self._intersections_skipped:
+            for index, (left, right) in enumerate(segments):
+                ax, ay = left
+                bx, by = right
+                for other_index in range(index + 1, len(segments)):
+                    other_left, other_right = segments[other_index]
+                    cx, cy = other_left
+                    dx, dy = other_right
+                    denominator = (bx - ax) * (dy - cy) - (by - ay) * (dx - cx)
+                    if abs(denominator) < 1e-12:
+                        continue
+                    t = ((cx - ax) * (dy - cy) - (cy - ay) * (dx - cx)) / denominator
+                    u = -((bx - ax) * (cy - ay) - (by - ay) * (cx - ax)) / denominator
+                    if 0 <= t <= 1 and 0 <= u <= 1:
+                        candidates["intersection"].append((ax + t * (bx - ax), ay + t * (by - ay)))
         self._snap_candidates = candidates
         self._snap_points = [point for values in candidates.values() for point in values]
 

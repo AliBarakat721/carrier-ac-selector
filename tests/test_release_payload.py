@@ -8,6 +8,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from updater import ALLOWED_PACKAGE_DIRS, ALLOWED_ROOT_FILES
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
 
@@ -28,6 +30,20 @@ def _release_package_dirs() -> set[str]:
     return set(re.findall(r'"([^"\r\n]+)"', match.group(1)))
 
 
+def _powershell_allowed_root_files() -> set[str]:
+    text = (REPO_ROOT / "apply_update.ps1").read_text(encoding="utf-8")
+    match = re.search(r"\$allowedRoot\s*=\s*@\((.*?)\n\s*\)", text, re.DOTALL)
+    assert match, "Could not locate the PowerShell updater root-file allow-list."
+    return set(re.findall(r'"([^"\r\n]+)"', match.group(1)))
+
+
+def _powershell_package_dirs() -> set[str]:
+    text = (REPO_ROOT / "apply_update.ps1").read_text(encoding="utf-8")
+    match = re.search(r"\$allowedPackageDirs\s*=\s*@\((.*?)\)", text, re.DOTALL)
+    assert match, "Could not locate the PowerShell updater package-directory allow-list."
+    return set(re.findall(r'"([^"\r\n]+)"', match.group(1)))
+
+
 def test_release_staging_includes_all_root_python_modules_and_runtime_packages():
     root_files = _release_root_files()
     staged_python = {name for name in root_files if name.endswith(".py")}
@@ -36,6 +52,19 @@ def test_release_staging_includes_all_root_python_modules_and_runtime_packages()
     assert not missing_root, f"Release omits root Python modules: {sorted(missing_root)}"
 
     package_dirs = _release_package_dirs()
+    assert package_dirs == ALLOWED_PACKAGE_DIRS, (
+        "Workflow and Python updater package allow-lists differ."
+    )
+    assert package_dirs == _powershell_package_dirs(), (
+        "Workflow and PowerShell updater package allow-lists differ."
+    )
+    assert root_files <= ALLOWED_ROOT_FILES, (
+        f"Python updater rejects staged root files: {sorted(root_files - ALLOWED_ROOT_FILES)}"
+    )
+    assert root_files <= _powershell_allowed_root_files(), (
+        "PowerShell updater rejects staged root files: "
+        f"{sorted(root_files - _powershell_allowed_root_files())}"
+    )
     expected_dirs = {"cad", "ui"}
     assert expected_dirs <= package_dirs, f"Release omits runtime packages: {sorted(expected_dirs - package_dirs)}"
     for directory in package_dirs:
